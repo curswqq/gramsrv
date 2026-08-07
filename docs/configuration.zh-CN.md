@@ -527,7 +527,7 @@ active key。不要手工编辑 manifest 或 PEM，不要在各实例上分别�
 | `TELESRV_PREMIUM_BOT_USERNAME` | username / `premiumbot` | 内置 Premium 商店 bot 的保留 username；开头的 `@` 会被移除，非法值会使启动失败。 |
 | `TELESRV_PREMIUM_BOT_USER_ID` | int64 / `1250000015` | 内置 Premium bot 的稳定用户 ID；必须为正且不能与其他系统账号冲突。 |
 | `TELESRV_PREMIUM_PLANS` | `months:days:stars` CSV / `3:90:750,6:180:1300,12:365:2400` | 初始化并同步由配置管理的 Premium 套餐；月份不得重复，所有值必须为正且在边界内。在管理界面保存后，该行转为管理员管理，后续重启不会覆盖它。目录变更会提升持久化版本，使旧价格 form 失效。 |
-| `TELESRV_PREMIUM_GRANT_MONTHS` | int / `3` | 新注册账号默认 Premium 月数；`0` 关闭新赠送，不影响已有迁移 backfill。 |
+| `TELESRV_PREMIUM_GRANT_MONTHS` | int / `0` | 新注册账号默认 Premium 月数；生产安全默认值 `0` 关闭自动赠送，仅应在明确促销时设为正数，不影响已有账号与迁移 backfill。 |
 | `TELESRV_STARS_STARTING_GRANT` | int64 / `1000` | 对所有账号幂等惰性授予的 Stars 起始余额；`0` 关闭自动赠送。 |
 | `TELESRV_PREMIUM_SWEEP_INTERVAL` | duration / `1m` | 过期 Premium 清理/推送周期；读取路径独立即时派生到期状态。 |
 | `TELESRV_PREMIUM_SWEEP_BATCH` | int / `500` | 单次 sweep 最大处理行数。 |

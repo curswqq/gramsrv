@@ -33,9 +33,9 @@ export function LoginPage({ onLogin }: { onLogin: (session: AdminSession) => voi
       <section className="login-panel">
         <div className="login-head">
           <div className="brand brand-elevated">
-            <span className="brand-mark">T</span>
+            <span className="brand-mark">N</span>
             <span>
-              <strong>telesrv</strong>
+              <strong>NexGram</strong>
               <small>{t("app.adminConsole")}</small>
             </span>
           </div>

@@ -553,7 +553,7 @@ path. `TELESRV_PUBLIC_BASE_URL` must resolve to that proxy for moderation freeze
 | `TELESRV_PREMIUM_BOT_USERNAME` | username / `premiumbot` | Reserved built-in Premium storefront username. A leading `@` is normalized away; invalid usernames fail startup. |
 | `TELESRV_PREMIUM_BOT_USER_ID` | int64 / `1250000015` | Stable built-in Premium bot user ID. It must be positive and must not collide with another system account. |
 | `TELESRV_PREMIUM_PLANS` | `months:days:stars` CSV / `3:90:750,6:180:1300,12:365:2400` | Seeds and synchronizes config-owned Premium plans. Months must be unique; all values are positive and bounded. Saving a row in the admin UI makes it admin-owned, so later restarts do not overwrite it. A catalog change bumps the durable plan version and invalidates outstanding old-price forms. |
-| `TELESRV_PREMIUM_GRANT_MONTHS` | int / `3` | Premium months granted to newly registered users; `0` disables new grants. Existing migration backfills are unaffected. |
+| `TELESRV_PREMIUM_GRANT_MONTHS` | int / `0` | Premium months granted to newly registered users; the production-safe default disables automatic grants. Set a positive value only for an explicit promotion. Existing accounts and migration backfills are unaffected. |
 | `TELESRV_STARS_STARTING_GRANT` | int64 / `1000` | Idempotent lazy starting Stars balance for all accounts; `0` disables automatic grant. |
 | `TELESRV_PREMIUM_SWEEP_INTERVAL` | duration / `1m` | Expired-premium cleanup/push interval. Read paths derive expiry independently. |
 | `TELESRV_PREMIUM_SWEEP_BATCH` | int / `500` | Maximum expired premium rows processed per sweep. |

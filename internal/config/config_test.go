@@ -499,6 +499,32 @@ func TestLoadLoginEmailDefaultsDisabled(t *testing.T) {
 	}
 }
 
+func TestLoadPremiumGrantDefaultsDisabled(t *testing.T) {
+	disableDefaultConfigFile(t)
+	t.Setenv("TELESRV_PREMIUM_GRANT_MONTHS", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PremiumGrantMonths != 0 {
+		t.Fatalf("PremiumGrantMonths = %d, want 0", cfg.PremiumGrantMonths)
+	}
+}
+
+func TestLoadPremiumGrantExplicitPromotion(t *testing.T) {
+	disableDefaultConfigFile(t)
+	t.Setenv("TELESRV_PREMIUM_GRANT_MONTHS", "3")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PremiumGrantMonths != 3 {
+		t.Fatalf("PremiumGrantMonths = %d, want 3", cfg.PremiumGrantMonths)
+	}
+}
+
 func TestLoadLoginEmailSMTPConfig(t *testing.T) {
 	disableDefaultConfigFile(t)
 	t.Setenv("TELESRV_LOGIN_EMAIL_ENABLE", "true")

@@ -865,7 +865,7 @@ func Load() (Config, error) {
 		CallSignalingRate:      envIntOr("TELESRV_CALL_SIGNALING_RATE", 50),
 		CallExpiryInterval:     envDurationOr("TELESRV_CALL_EXPIRY_INTERVAL", time.Second),
 
-		PremiumGrantMonths:               envIntOr("TELESRV_PREMIUM_GRANT_MONTHS", 3),
+		PremiumGrantMonths:               envIntOr("TELESRV_PREMIUM_GRANT_MONTHS", 0),
 		PremiumBotUsername:               premiumBotUsername,
 		PremiumBotUserID:                 premiumBotUserID,
 		PremiumPlans:                     premiumPlans,
