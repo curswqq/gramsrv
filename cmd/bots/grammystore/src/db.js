@@ -122,12 +122,22 @@ INSERT OR IGNORE INTO settings(key,value) VALUES('stars_rate','20');
   }
 
   user(id) { return this.db.prepare("SELECT * FROM users WHERE telegram_id=?").get(id) ?? null; }
+  userByChatID(chatID) { return this.db.prepare("SELECT * FROM users WHERE chat_id=? ORDER BY updated_at DESC LIMIT 1").get(chatID) ?? null; }
   users() { return this.db.prepare("SELECT * FROM users ORDER BY created_at").all(); }
+  notificationRecipients(ttlDays = 30) {
+    const threshold = now() - Math.max(1, ttlDays) * 86400;
+    return this.db.prepare("SELECT * FROM users WHERE notifications=1 AND updated_at>=? ORDER BY created_at").all(threshold);
+  }
   stats() { return { users: this.db.prepare("SELECT count(*) n FROM users").get().n, numbers: this.db.prepare("SELECT count(*) n FROM numbers").get().n, sales: this.db.prepare("SELECT count(*) n FROM sales").get().n }; }
   setLanguage(id, language) { this.db.prepare("UPDATE users SET language=?,updated_at=? WHERE telegram_id=?").run(language, now(), id); }
   toggleNotifications(id) { this.db.prepare("UPDATE users SET notifications=1-notifications,updated_at=? WHERE telegram_id=?").run(now(), id); return Boolean(this.user(id)?.notifications); }
   setServerUserID(id, serverUserID) { this.db.prepare("UPDATE users SET server_user_id=?,updated_at=? WHERE telegram_id=?").run(serverUserID, now(), id); }
-  addBonus(id, amount) { this.db.prepare("UPDATE users SET bonus=MAX(0,bonus+?),updated_at=? WHERE telegram_id=?").run(amount, now(), id); return this.user(id)?.bonus ?? 0; }
+  addBonus(id, amount) {
+    if (!Number.isSafeInteger(amount)) throw new Error("invalid bonus amount");
+    const result = this.db.prepare("UPDATE users SET bonus=MAX(0,bonus+?),updated_at=? WHERE telegram_id=?").run(amount, now(), id);
+    if (!result.changes) throw new Error("invalid Telegram ID");
+    return this.user(id).bonus;
+  }
 
   claimDaily(id, amount) {
     return this.tx(() => {
@@ -219,9 +229,20 @@ INSERT OR IGNORE INTO settings(key,value) VALUES('stars_rate','20');
   }
   finishSpin(id, day) { this.db.prepare("UPDATE spin_awards SET status='done' WHERE telegram_id=? AND day=?").run(id, day); }
 
-  createPromo(code, stars, limit) { code = code.trim().toLowerCase(); this.db.prepare("INSERT INTO promos(code,stars_amount,max_acts,created_at) VALUES(?,?,?,?)").run(code, stars, limit, now()); return code; }
+  createPromo(code, stars, limit) {
+    code = String(code ?? "").trim().toLowerCase();
+    if (!/^[a-z0-9_-]{3,32}$/.test(code) || !Number.isSafeInteger(stars) || stars <= 0 || !Number.isSafeInteger(limit) || limit < 0) throw new Error("invalid promo parameters");
+    this.db.prepare("INSERT INTO promos(code,stars_amount,max_acts,created_at) VALUES(?,?,?,?)").run(code, stars, limit, now());
+    return code;
+  }
   claimPromo(code, id) { return this.claimCampaign("promo", code.trim().toLowerCase(), id); }
-  createGiveaway(text, stars, limit) { const id = randomBytes(4).toString("hex"); this.db.prepare("INSERT INTO giveaways(id,text,stars_amount,max_acts,created_at) VALUES(?,?,?,?,?)").run(id, text, stars, limit, now()); return this.db.prepare("SELECT * FROM giveaways WHERE id=?").get(id); }
+  createGiveaway(text, stars, limit) {
+    text = String(text ?? "").trim();
+    if (!text || text.length > 1000 || !Number.isSafeInteger(stars) || stars <= 0 || !Number.isSafeInteger(limit) || limit < 0) throw new Error("invalid giveaway parameters");
+    const id = randomBytes(4).toString("hex");
+    this.db.prepare("INSERT INTO giveaways(id,text,stars_amount,max_acts,created_at) VALUES(?,?,?,?,?)").run(id, text, stars, limit, now());
+    return this.db.prepare("SELECT * FROM giveaways WHERE id=?").get(id);
+  }
   claimGiveaway(id, telegramID) { return this.claimCampaign("giveaway", id, telegramID); }
 
   releaseCampaignClaim(kind, key, telegramID) {

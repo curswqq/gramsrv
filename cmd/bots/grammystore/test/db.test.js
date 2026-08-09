@@ -59,3 +59,26 @@ test("code access, support replies, refunds and pending wheel awards are durable
   db.finishSpin(1, reserved.day);
   assert.throws(() => db.reserveSpin(1, 100, 50));
 });
+
+test("language and notification preferences persist and broadcasts honor them", (t) => {
+  const db = fixture(t);
+  db.upsertUser({ id: 1, first_name: "One" }, 101, "ru");
+  db.upsertUser({ id: 2, first_name: "Two" }, 202, "en");
+  db.setLanguage(1, "en");
+  assert.equal(db.user(1).language, "en");
+  assert.equal(db.userByChatID(101).telegram_id, 1);
+  assert.deepEqual(db.notificationRecipients().map((user) => user.telegram_id), [1, 2]);
+  assert.equal(db.toggleNotifications(2), false);
+  assert.deepEqual(db.notificationRecipients().map((user) => user.telegram_id), [1]);
+  db.db.prepare("UPDATE users SET updated_at=0 WHERE telegram_id=1").run();
+  assert.deepEqual(db.notificationRecipients(30), []);
+});
+
+test("administrator mutations reject invalid input and missing users", (t) => {
+  const db = fixture(t);
+  assert.throws(() => db.createPromo("x", 10, 1));
+  assert.throws(() => db.createPromo("valid", -1, 1));
+  assert.throws(() => db.createGiveaway("", 10, 1));
+  assert.throws(() => db.createGiveaway("valid", 10, -1));
+  assert.throws(() => db.addBonus(999, 10));
+});

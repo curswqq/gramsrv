@@ -15,7 +15,10 @@ transactional SQLite database. It deliberately runs independently from
 - daily bonuses, referrals and a weighted wheel;
 - promo codes and button-based giveaways;
 - support tickets;
-- language and notification settings;
+- complete Russian and English localization for menus, keyboards, invoices,
+  errors, login codes and Bot API command descriptions;
+- per-user language and notification settings; broadcasts skip disabled and
+  stale recipients;
 - owner-only statistics, broadcasts, Stars/Premium/bonus grants, invoices,
   payment refunds, login-code access, support replies, sales and Stars-rate controls;
 - optional required-channel membership gate.
@@ -43,6 +46,10 @@ account IDs.
 
 `PRODUCT_NAME` controls user-facing product text and defaults to `Telesrv`.
 Deployment-specific branding belongs in the service environment, not in source.
+`DEFAULT_LANGUAGE` is used until Telegram supplies or the user selects a
+supported language. The selection is stored in SQLite and is not overwritten by
+later updates from Telegram. Bot command descriptions are registered separately
+for `ru` and `en` client locales.
 
 ## Migrating the former Python bot
 
