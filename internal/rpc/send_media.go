@@ -51,6 +51,54 @@ type outgoingSend struct {
 	allowPaidStars int64
 }
 
+// mediaReplyInputForDestination removes the redundant reply_to_peer_id emitted
+// by some official clients when an ordinary same-dialog reply is sent with an
+// attachment. The field is only removed after the destination itself confirms
+// that it contains the referenced message; otherwise cross-dialog semantics and
+// the normal strict peer/access-hash validation remain intact.
+func (r *Router) mediaReplyInputForDestination(ctx context.Context, userID int64, peer domain.Peer, input tg.InputReplyToClass) tg.InputReplyToClass {
+	reply, ok := input.(*tg.InputReplyToMessage)
+	if !ok || reply.ReplyToMsgID <= 0 {
+		return input
+	}
+	_, explicitReplyPeer := reply.GetReplyToPeerID()
+
+	found := false
+	stripTopMessageID := false
+	switch peer.Type {
+	case domain.PeerTypeChannel:
+		if r.deps.Channels != nil {
+			history, err := r.deps.Channels.GetMessages(ctx, userID, peer.ID, []int{reply.ReplyToMsgID})
+			found = err == nil && len(history.Messages) == 1 && history.Messages[0].ID == reply.ReplyToMsgID
+			stripTopMessageID = found && !history.Channel.Forum
+		}
+	case domain.PeerTypeUser:
+		if r.deps.Messages != nil {
+			list, err := r.deps.Messages.GetMessages(ctx, userID, []int{reply.ReplyToMsgID})
+			found = err == nil && len(list.Messages) == 1 && list.Messages[0].ID == reply.ReplyToMsgID && list.Messages[0].Peer == peer
+		}
+	}
+	if !found {
+		return input
+	}
+	if !explicitReplyPeer && !stripTopMessageID {
+		return input
+	}
+	clean := *reply
+	if explicitReplyPeer {
+		clean.Flags.Unset(1) // inputReplyToMessage.reply_to_peer_id
+		clean.ReplyToPeerID = nil
+	}
+	if stripTopMessageID {
+		// top_msg_id is a forum-topic routing field. TDesktop may retain it while
+		// converting a text reply into a media reply in an ordinary megagroup;
+		// the channel store derives the correct root from the target message.
+		clean.Flags.Unset(0)
+		clean.TopMsgID = 0
+	}
+	return &clean
+}
+
 // sendOutgoing 把一条出站消息落地到私聊或频道，返回 *tg.Updates、是否重复、错误。
 // media 为空即纯文本。校验（长度/random_id/限流）由调用方完成。
 func (r *Router) sendOutgoing(ctx context.Context, userID int64, peer domain.Peer, p outgoingSend) (tg.UpdatesClass, bool, error) {
@@ -128,7 +176,8 @@ func (r *Router) sendOutgoing(ctx context.Context, userID int64, peer domain.Pee
 	if r.deps.Messages == nil {
 		return nil, false, peerIDInvalidErr()
 	}
-	if err := r.ensurePrivateContactAllowed(ctx, userID, peer.ID, p.allowPaidStars, 1); err != nil {
+	paidMessageStars, err := r.privateContactPaidStars(ctx, userID, peer.ID, p.allowPaidStars, 1)
+	if err != nil {
 		return nil, false, err
 	}
 	if err := r.ensureVoiceMessagesAllowed(ctx, userID, peer, p.media != nil && p.media.HasUnreadPayload()); err != nil {
@@ -179,6 +228,7 @@ func (r *Router) sendOutgoing(ctx context.Context, userID int64, peer domain.Pee
 		ViaBotID:               p.viaBotID,
 		GroupedID:              p.groupedID,
 		Effect:                 p.effect,
+		PaidMessageStars:       paidMessageStars,
 	})
 	if err != nil {
 		fields := append(r.contextLogFields(ctx),
@@ -201,6 +251,7 @@ func (r *Router) sendOutgoing(ctx context.Context, userID int64, peer domain.Pee
 	if !res.Duplicate {
 		users = r.usersForMessageUpdate(ctx, userID, res.SenderMessage)
 		chats = r.chatsForMessageUpdate(ctx, userID, res.SenderMessage)
+		r.applyPeerReadModels(ctx, userID, users, chats)
 	}
 	if p.clearDraft && !res.Duplicate {
 		r.clearDraftAfterSend(ctx, userID, peer, replyTo)
@@ -209,8 +260,23 @@ func (r *Router) sendOutgoing(ctx context.Context, userID int64, peer domain.Pee
 		// 链接预览 pending 占位：带外解析并就地替换（异步，不阻塞发送 echo）。
 		r.maybeEnqueueWebPageResolve(userID, peer, res.SenderMessage.ID, res.SenderMessage.Media)
 		r.enqueueBotAPIPrivateMessageUpdateAsync(ctx, res)
+		if res.SenderStarsBalance != nil {
+			_ = r.NotifyStarsBalanceChanged(ctx, *res.SenderStarsBalance)
+		}
+		if res.RecipientStarsBalance != nil {
+			_ = r.NotifyStarsBalanceChanged(ctx, *res.RecipientStarsBalance)
+		}
+		if res.SenderStarsBalance != nil || res.RecipientStarsBalance != nil {
+			r.refreshAccountRatings(ctx, userID, peer.ID)
+		}
 	}
-	return tgPrivateSendResultUpdates(res, p.randomID, true, users, chats), res.Duplicate, nil
+	updates := tgPrivateSendResultUpdates(res, p.randomID, true, users, chats)
+	if res.SenderStarsBalance != nil {
+		updates.Updates = append(updates.Updates, &tg.UpdateStarsBalance{
+			Balance: &tg.StarsAmount{Amount: res.SenderStarsBalance.Balance},
+		})
+	}
+	return updates, res.Duplicate, nil
 }
 
 // onMessagesUploadMedia 解析 InputMedia（上传或引用），返回可复用的 tg.MessageMedia。
@@ -392,6 +458,7 @@ func (r *Router) onMessagesSendMedia(ctx context.Context, req *tg.MessagesSendMe
 	if err := r.ensureVoiceMessagesAllowed(ctx, userID, peer, voiceOrRound); err != nil {
 		return nil, err
 	}
+	replyToInput := r.mediaReplyInputForDestination(ctx, userID, peer, req.ReplyTo)
 	media, err := r.resolveInputMedia(ctx, userID, req.Media)
 	if err != nil {
 		return nil, err
@@ -421,7 +488,7 @@ func (r *Router) onMessagesSendMedia(ctx context.Context, req *tg.MessagesSendMe
 			media:                  media,
 			silent:                 req.Silent,
 			noforwards:             req.Noforwards,
-			replyToInput:           req.ReplyTo,
+			replyToInput:           replyToInput,
 			sendAsInput:            req.SendAs,
 			clearDraft:             req.ClearDraft,
 			allowPaidStars:         req.AllowPaidStars,
@@ -436,7 +503,7 @@ func (r *Router) onMessagesSendMedia(ctx context.Context, req *tg.MessagesSendMe
 		media:                  media,
 		silent:                 req.Silent,
 		noforwards:             req.Noforwards,
-		replyToInput:           req.ReplyTo,
+		replyToInput:           replyToInput,
 		sendAsInput:            req.SendAs,
 		clearDraft:             req.ClearDraft,
 		replyMarkup:            replyMarkup,
@@ -444,6 +511,39 @@ func (r *Router) onMessagesSendMedia(ctx context.Context, req *tg.MessagesSendMe
 		allowPaidStars:         req.AllowPaidStars,
 	})
 	if err != nil {
+		if strings.Contains(err.Error(), "REPLY_MESSAGE_ID_INVALID") {
+			fields := append(r.contextLogFields(ctx),
+				zap.Int64("user_id", userID),
+				zap.String("destination_peer_type", fmt.Sprint(peer.Type)),
+				zap.Int64("destination_peer_id", peer.ID),
+				zap.String("reply_input_type", fmt.Sprintf("%T", req.ReplyTo)),
+				zap.Error(err),
+			)
+			if raw, ok := req.ReplyTo.(*tg.InputReplyToMessage); ok {
+				fields = append(fields, zap.Int("raw_reply_msg_id", raw.ReplyToMsgID))
+				if top, present := raw.GetTopMsgID(); present {
+					fields = append(fields, zap.Int("raw_top_msg_id", top))
+				}
+				if rawPeer, present := raw.GetReplyToPeerID(); present {
+					fields = append(fields, zap.String("raw_reply_peer_type", fmt.Sprintf("%T", rawPeer)))
+					if parsed, valid := r.domainPeerFromInputPeer(userID, rawPeer); valid {
+						fields = append(fields,
+							zap.String("raw_reply_peer_domain_type", fmt.Sprint(parsed.Type)),
+							zap.Int64("raw_reply_peer_id", parsed.ID),
+						)
+					}
+				}
+			}
+			if normalized, ok := replyToInput.(*tg.InputReplyToMessage); ok {
+				fields = append(fields, zap.Int("normalized_reply_msg_id", normalized.ReplyToMsgID))
+				if top, present := normalized.GetTopMsgID(); present {
+					fields = append(fields, zap.Int("normalized_top_msg_id", top))
+				}
+				_, normalizedPeerPresent := normalized.GetReplyToPeerID()
+				fields = append(fields, zap.Bool("normalized_reply_peer_present", normalizedPeerPresent))
+			}
+			r.log.Warn("messages.sendMedia reply rejected", fields...)
+		}
 		return nil, err
 	}
 	return updates, nil
@@ -547,6 +647,7 @@ func (r *Router) onMessagesSendMultiMedia(ctx context.Context, req *tg.MessagesS
 	if err := r.ensureVoiceMessagesAllowed(ctx, userID, peer, voiceOrRound); err != nil {
 		return nil, err
 	}
+	replyToInput := r.mediaReplyInputForDestination(ctx, userID, peer, req.ReplyTo)
 
 	// 必须在 resolveInputMedia 或发送任何 item 之前原子预留：首次请求若在第 N 条
 	// 失败，客户端只重试失败子集时仍从已绑定 random_id 恢复整包 grouped_id。
@@ -590,7 +691,7 @@ func (r *Router) onMessagesSendMultiMedia(ctx context.Context, req *tg.MessagesS
 			media:                  media,
 			silent:                 req.Silent,
 			noforwards:             req.Noforwards,
-			replyToInput:           req.ReplyTo,
+			replyToInput:           replyToInput,
 			sendAsInput:            req.SendAs,
 			clearDraft:             clearDraftPending,
 			groupedID:              groupedID,
@@ -1139,6 +1240,8 @@ func sendMessageRequestFromSendMedia(req *tg.MessagesSendMediaRequest) *tg.Messa
 
 func mediaUploadErr(err error) error {
 	switch {
+	case errors.Is(err, domain.ErrFileTooBig):
+		return fileTooBigErr()
 	case errors.Is(err, domain.ErrFilePartsInvalid):
 		return filePartsInvalidErr()
 	case errors.Is(err, domain.ErrPhotoInvalid):

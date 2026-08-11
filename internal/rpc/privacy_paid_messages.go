@@ -5,6 +5,7 @@ import (
 	"math"
 
 	"github.com/iamxvbaba/td/tg"
+	"go.uber.org/zap"
 )
 
 type privateContactRequirement struct {
@@ -43,6 +44,36 @@ func applyPrivateContactRestrictionToUserFull(full *tg.UserFull, restriction pri
 	} else {
 		full.Flags2.Unset(14)
 		full.SendPaidMessagesStars = 0
+	}
+}
+
+// applyPrivateContactRestrictionsToUsers keeps every viewer-scoped User
+// projection consistent with users.getFullUser. Telegram clients replace their
+// cached peer with User objects carried by message/update envelopes; omitting
+// send_paid_messages_stars there makes the client forget the current price and
+// fail every next send once with ALLOW_PAYMENT_REQUIRED.
+func (r *Router) applyPrivateContactRestrictionsToUsers(
+	ctx context.Context,
+	viewerUserID int64,
+	users []tg.UserClass,
+) {
+	if r == nil || viewerUserID == 0 || len(users) == 0 {
+		return
+	}
+	for _, item := range users {
+		user, ok := item.(*tg.User)
+		if !ok || user == nil || user.ID == 0 || user.ID == viewerUserID || user.Deleted {
+			continue
+		}
+		restriction, err := r.privateContactRestrictionFor(ctx, viewerUserID, user.ID)
+		if err != nil {
+			r.log.Warn("project private contact restriction",
+				zap.Int64("viewer_user_id", viewerUserID),
+				zap.Int64("peer_user_id", user.ID),
+				zap.Error(err))
+			continue
+		}
+		applyPrivateContactRestrictionToUser(user, restriction)
 	}
 }
 
@@ -98,40 +129,48 @@ func (r *Router) viewerIsPremiumForPrivacy(ctx context.Context, viewerUserID int
 	return premium, nil
 }
 
+func (r *Router) privateContactPaidStars(
+	ctx context.Context,
+	senderUserID, recipientUserID, allowPaidStars int64,
+	messageCount int,
+) (int64, error) {
+	if allowPaidStars < 0 || messageCount < 1 {
+		return 0, starsAmountInvalidErr()
+	}
+	requirement, err := r.privateContactRestrictionFor(ctx, senderUserID, recipientUserID)
+	if err != nil {
+		return 0, err
+	}
+	if requirement.requirePremium {
+		premium, err := r.viewerIsPremiumForPrivacy(ctx, senderUserID)
+		if err != nil {
+			return 0, err
+		}
+		if !premium {
+			return 0, premiumAccountRequiredErr()
+		}
+		return 0, nil
+	}
+	if requirement.paidStars <= 0 {
+		return 0, nil
+	}
+	if requirement.paidStars > math.MaxInt64/int64(messageCount) {
+		return 0, starsAmountInvalidErr()
+	}
+	required := requirement.paidStars * int64(messageCount)
+	if allowPaidStars < required {
+		return 0, allowPaymentRequiredErr(required)
+	}
+	// The authorization is only a ceiling. Persist and charge the recipient's
+	// current per-message price, as required by the Telegram paid-message API.
+	return requirement.paidStars, nil
+}
+
 func (r *Router) ensurePrivateContactAllowed(
 	ctx context.Context,
 	senderUserID, recipientUserID, allowPaidStars int64,
 	messageCount int,
 ) error {
-	if allowPaidStars < 0 || messageCount < 1 {
-		return starsAmountInvalidErr()
-	}
-	requirement, err := r.privateContactRestrictionFor(ctx, senderUserID, recipientUserID)
-	if err != nil {
-		return err
-	}
-	if requirement.requirePremium {
-		premium, err := r.viewerIsPremiumForPrivacy(ctx, senderUserID)
-		if err != nil {
-			return err
-		}
-		if !premium {
-			return premiumAccountRequiredErr()
-		}
-		return nil
-	}
-	if requirement.paidStars <= 0 {
-		return nil
-	}
-	if requirement.paidStars > math.MaxInt64/int64(messageCount) {
-		return starsAmountInvalidErr()
-	}
-	required := requirement.paidStars * int64(messageCount)
-	if allowPaidStars < required {
-		return allowPaymentRequiredErr(required)
-	}
-	// The privacy gate and no-paid exception are complete here. The separate
-	// private paid-message ledger is not part of the current message store yet;
-	// never accept an authorization without an atomic debit.
-	return paymentUnsupportedErr()
+	_, err := r.privateContactPaidStars(ctx, senderUserID, recipientUserID, allowPaidStars, messageCount)
+	return err
 }

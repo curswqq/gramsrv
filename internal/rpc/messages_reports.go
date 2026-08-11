@@ -217,15 +217,17 @@ func (r *Router) onMessagesReportReadMetrics(ctx context.Context, req *tg.Messag
 	if err != nil {
 		return false, err
 	}
-	if err := r.validateTelemetryMessageIDs(ctx, userID, peer, ids); err != nil {
-		return false, err
-	}
+	// Read metrics are best-effort client telemetry. Official mobile clients can
+	// report a message after its local dialog cache has moved on (or after the
+	// message was deleted), so existence validation must not turn opening a
+	// profile/channel into a user-visible MESSAGE_ID_INVALID failure. Peer access
+	// was still validated above and the telemetry stream is non-authoritative.
 	if r.deps.ClientTelemetry == nil {
 		return false, internalErr()
 	}
 	if _, _, err := r.deps.ClientTelemetry.Record(
 		ctx, userID, domain.ClientTelemetryReadMetrics, peer,
-		messageIDs64(ids),
+		uniqueInt64(messageIDs64(ids)),
 		struct {
 			Metrics []readMetricTelemetry `json:"metrics"`
 		}{Metrics: payload},

@@ -2853,7 +2853,7 @@ func TestStoriesGetStoriesViewsAlignsWithRequestedIDs(t *testing.T) {
 	}
 	storyStore := memory.NewStoryStore()
 	owner := domain.Peer{Type: domain.PeerTypeUser, ID: ownerUser.ID}
-	for _, storyID := range []int{1, 2} {
+	for _, storyID := range []int{1, 2, 3} {
 		if _, err := storyStore.UpsertStory(ctx, domain.UpsertStoryRequest{Story: domain.Story{
 			Owner:      owner,
 			ID:         storyID,
@@ -2877,16 +2877,19 @@ func TestStoriesGetStoriesViewsAlignsWithRequestedIDs(t *testing.T) {
 
 	got, err := r.onStoriesGetStoriesViews(WithUserID(ctx, ownerUser.ID), &tg.StoriesGetStoriesViewsRequest{
 		Peer: &tg.InputPeerSelf{},
-		ID:   []int{1, 1, 99, 2},
+		ID:   []int{1, 1, 99, 2, 3},
 	})
 	if err != nil {
 		t.Fatalf("get stories views: %v", err)
 	}
-	if len(got.Views) != 4 {
+	if len(got.Views) != 5 {
 		t.Fatalf("views length = %d, want one entry per requested id including duplicates", len(got.Views))
 	}
-	if got.Views[0].ViewsCount != 1 || got.Views[1].ViewsCount != 1 || got.Views[2].ViewsCount != 0 || got.Views[3].ViewsCount != 2 {
-		t.Fatalf("views counts = [%d %d %d %d], want [1 1 0 2]", got.Views[0].ViewsCount, got.Views[1].ViewsCount, got.Views[2].ViewsCount, got.Views[3].ViewsCount)
+	if got.Views[0].ViewsCount != 1 || got.Views[1].ViewsCount != 1 || got.Views[2].ViewsCount != 0 || got.Views[3].ViewsCount != 2 || got.Views[4].ViewsCount != 0 {
+		t.Fatalf("views counts = [%d %d %d %d %d], want [1 1 0 2 0]", got.Views[0].ViewsCount, got.Views[1].ViewsCount, got.Views[2].ViewsCount, got.Views[3].ViewsCount, got.Views[4].ViewsCount)
+	}
+	if !got.Views[4].HasViewers {
+		t.Fatal("owner zero-view story must advertise an available viewers list")
 	}
 	if recent, ok := got.Views[0].GetRecentViewers(); !ok || len(recent) != 1 || recent[0] != viewerOne.ID {
 		t.Fatalf("owner recent viewers = %v ok %v, want viewer one", recent, ok)

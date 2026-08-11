@@ -30,6 +30,7 @@ const (
 	ActionRefundPremium           = "account.refund_premium"
 	ActionUpsertPremiumPlan       = "premium.plan.upsert"
 	ActionGrantStars              = "account.grant_stars"
+	ActionGrantStarsAll           = "account.grant_stars_all"
 	ActionDebitStars              = "account.debit_stars"
 	ActionSetVerified             = "account.set_verified"
 	ActionSetUserFlags            = "account.set_flags"
@@ -102,6 +103,7 @@ const (
 	ActionUpsertVerificationIcon    = "botverification.upsert_icon"
 	ActionSetVerificationIconActive = "botverification.set_icon_active"
 	ActionRevokeCustomVerification  = "botverification.revoke_mark"
+	ActionGrantCustomVerification   = "botverification.grant_mark"
 	ActionApproveBotVerification    = "botverification.approve"
 	ActionRejectBotVerification     = "botverification.reject"
 	ActionRevokeBotVerification     = "botverification.revoke_request"
@@ -230,6 +232,11 @@ type UsersService interface {
 	SetPhone(ctx context.Context, userID int64, phone string) (domain.User, error)
 }
 
+type adminAccountLookup interface {
+	AdminUserByPhone(context.Context, string) (domain.User, bool, error)
+	AdminUserByUsername(context.Context, string) (domain.User, bool, error)
+}
+
 type AccountService interface {
 	ValidLoginEmail(email string) bool
 	SetLoginEmail(ctx context.Context, userID int64, email string) error
@@ -240,6 +247,14 @@ type AccountService interface {
 type StarsService interface {
 	Credit(ctx context.Context, userID, amount int64, reason domain.StarsTransactionReason, peer domain.Peer, title, desc string) (domain.StarsBalance, error)
 	Debit(ctx context.Context, userID, amount int64, reason domain.StarsTransactionReason, peer domain.Peer, title, desc string) (domain.StarsBalance, error)
+}
+
+type bulkStarsService interface {
+	CreditAllUsers(context.Context, int64, domain.StarsTransactionReason, string, string, string) ([]domain.StarsBalance, bool, int, error)
+}
+
+type starsBalanceReader interface {
+	GetBalance(context.Context, int64) (domain.StarsBalance, error)
 }
 
 type BroadcastService interface {
@@ -893,6 +908,26 @@ type GrantStarsRequest struct {
 	CommandMeta
 	UserID int64 `json:"user_id"`
 	Amount int64 `json:"amount"`
+}
+
+type GrantStarsAllRequest struct {
+	CommandMeta
+	Amount int64 `json:"amount"`
+}
+
+type AccountLookup struct {
+	ID           int64  `json:"id,string"`
+	Phone        string `json:"phone"`
+	FirstName    string `json:"first_name"`
+	LastName     string `json:"last_name"`
+	Username     string `json:"username"`
+	Verified     bool   `json:"verified"`
+	Support      bool   `json:"support"`
+	Bot          bool   `json:"bot"`
+	PremiumUntil int    `json:"premium_until"`
+	StarsBalance int64  `json:"stars_balance,string"`
+	RatingStars  int64  `json:"rating_stars,string"`
+	RatingLevel  int    `json:"rating_level"`
 }
 
 type DebitStarsRequest struct {
@@ -1694,6 +1729,86 @@ func (s *Service) GrantStars(ctx context.Context, req GrantStarsRequest) (Comman
 	})
 }
 
+func (s *Service) GrantStarsAll(ctx context.Context, req GrantStarsAllRequest) (CommandResult, error) {
+	if req.Amount <= 0 || req.Amount > maxStarsGrant {
+		return CommandResult{}, fmt.Errorf("amount must be between 1 and %d", maxStarsGrant)
+	}
+	if s == nil {
+		return CommandResult{}, fmt.Errorf("bulk stars dependency is not configured")
+	}
+	bulk, ok := s.stars.(bulkStarsService)
+	if !ok {
+		return CommandResult{}, fmt.Errorf("bulk stars dependency is not configured")
+	}
+	return s.runCommand(ctx, req.CommandMeta, ActionGrantStarsAll, 0, domain.Peer{}, req, func() (CommandResult, error) {
+		details := map[string]any{"amount": req.Amount, "all_live_users": true}
+		if req.DryRun {
+			return CommandResult{Message: "bulk stars grant validated", Details: details}, nil
+		}
+		balances, applied, count, err := bulk.CreditAllUsers(ctx, req.Amount, domain.StarsReasonAdjust,
+			"Server-wide Stars grant", req.Reason, "admin:"+req.CommandID)
+		if err != nil {
+			return CommandResult{Details: details}, err
+		}
+		notifyErrors := 0
+		for _, balance := range balances {
+			if err := s.notifyStarsBalanceChanged(ctx, balance); err != nil {
+				notifyErrors++
+			}
+		}
+		details["recipient_count"] = count
+		details["applied"] = applied
+		details["notification_errors"] = notifyErrors
+		return CommandResult{Message: "stars granted to all users", Details: details}, nil
+	})
+}
+
+func (s *Service) LookupAccount(ctx context.Context, query string) (AccountLookup, bool, error) {
+	if s == nil || s.users == nil {
+		return AccountLookup{}, false, fmt.Errorf("admin users dependency is not configured")
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return AccountLookup{}, false, nil
+	}
+	var user domain.User
+	var found bool
+	var err error
+	lookup, hasLookup := s.users.(adminAccountLookup)
+	if id, parseErr := strconv.ParseInt(query, 10, 64); parseErr == nil && id > 0 {
+		user, found, err = s.users.AdminUser(ctx, id)
+		// A bare phone number is also numeric. Prefer an exact account ID, then
+		// fall back to canonical phone lookup when no such account exists.
+		if err == nil && !found && hasLookup {
+			user, found, err = lookup.AdminUserByPhone(ctx, query)
+		}
+	} else if hasLookup {
+		if strings.ContainsAny(query, "+ ()-") {
+			user, found, err = lookup.AdminUserByPhone(ctx, query)
+		} else {
+			user, found, err = lookup.AdminUserByUsername(ctx, query)
+		}
+	} else {
+		return AccountLookup{}, false, fmt.Errorf("account lookup dependency is not configured")
+	}
+	if err != nil || !found {
+		return AccountLookup{}, found, err
+	}
+	out := AccountLookup{ID: user.ID, Phone: user.Phone, FirstName: user.FirstName, LastName: user.LastName,
+		Username: user.Username, Verified: user.Verified, Support: user.Support, Bot: user.Bot, PremiumUntil: user.PremiumUntil}
+	if reader, ok := s.stars.(starsBalanceReader); ok {
+		if balance, balanceErr := reader.GetBalance(ctx, user.ID); balanceErr == nil {
+			out.StarsBalance = balance.Balance
+		}
+	}
+	if s.rating != nil {
+		if rating, ratingErr := s.rating.Rating(ctx, user.ID); ratingErr == nil {
+			out.RatingStars, out.RatingLevel = rating.Stars, rating.Level
+		}
+	}
+	return out, true, nil
+}
+
 func (s *Service) DebitStars(ctx context.Context, req DebitStarsRequest) (CommandResult, error) {
 	if req.UserID <= 0 {
 		return CommandResult{}, fmt.Errorf("user_id is required")
@@ -1906,6 +2021,9 @@ func (s *Service) GiveGift(ctx context.Context, req GiveGiftRequest) (CommandRes
 			}
 			details["gift_title"] = gift.Title
 			details["gift_stars"] = gift.Stars
+			if gift.UpgradeStars > 0 && !gift.CollectibleUpgradeAvailable() {
+				return CommandResult{}, fmt.Errorf("gift %d collectible supply is exhausted", req.GiftID)
+			}
 			if req.Upgrade {
 				preview, ok, err := s.gifts.CollectiblePreview(ctx, req.GiftID)
 				if err != nil {

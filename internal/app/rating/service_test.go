@@ -203,8 +203,8 @@ func TestRecomputePendingPolicy(t *testing.T) {
 		if rating.Stars != 100 {
 			t.Fatalf("visible stars = %d, want the previous 100 while the increase is pending", rating.Stars)
 		}
-		if rating.PendingStars != 400 {
-			t.Fatalf("pending stars = %d, want 400", rating.PendingStars)
+		if rating.PendingStars != 500 {
+			t.Fatalf("pending stars = %d, want 500", rating.PendingStars)
 		}
 		if want := testNow.Add(24 * time.Hour); !rating.PendingDate.Equal(want) {
 			t.Fatalf("pending date = %v, want %v", rating.PendingDate, want)
@@ -245,7 +245,7 @@ func TestRecomputePendingPolicy(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Recompute: %v", err)
 		}
-		if rating.Stars != 500 || rating.PendingStars != 0 || !rating.PendingDate.IsZero() {
+		if rating.Stars != 600 || rating.PendingStars != 0 || !rating.PendingDate.IsZero() {
 			t.Fatalf("rating = %#v, want the parked delta applied and cleared", rating)
 		}
 	})
@@ -260,7 +260,7 @@ func TestRecomputePendingPolicy(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Recompute: %v", err)
 		}
-		if rating.Stars != 500 || rating.PendingStars != 0 {
+		if rating.Stars != 600 || rating.PendingStars != 0 {
 			t.Fatalf("rating = %d stars / %d pending, want an immediate apply", rating.Stars, rating.PendingStars)
 		}
 	})
@@ -280,8 +280,8 @@ func TestRecomputeRetriesOnceOnVersionConflict(t *testing.T) {
 	if len(st.saves) != 2 {
 		t.Fatalf("saves = %d, want exactly one retry", len(st.saves))
 	}
-	if rating.Version != 4 || rating.Stars != 200 {
-		t.Fatalf("rating = %#v, want version 4 with 200 stars", rating)
+	if rating.Version != 4 || rating.Stars != 300 {
+		t.Fatalf("rating = %#v, want version 4 with the 100-point account baseline plus 200 activity stars", rating)
 	}
 }
 
@@ -310,7 +310,7 @@ func TestAdjustRecordsLedgerAndRecomputes(t *testing.T) {
 	if err != nil || !applied {
 		t.Fatalf("Adjust = %v, %v", applied, err)
 	}
-	if rating.ManualComponent != 300 || rating.Stars != 400 {
+	if rating.ManualComponent != 300 || rating.Stars != 500 {
 		t.Fatalf("rating = %#v, want the manual component folded in", rating)
 	}
 	if len(st.events[7]) != 1 {

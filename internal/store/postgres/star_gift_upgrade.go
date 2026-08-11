@@ -113,7 +113,7 @@ FROM star_gift_catalog WHERE gift_id=$1 FOR UPDATE`, req.GiftID).Scan(&revisionI
 			if err != nil {
 				return err
 			}
-			if revision.Issued >= revision.SupplyTotal {
+			if revision.Issued+revision.Reserved >= revision.SupplyTotal {
 				return domain.ErrStarGiftCollectibleSoldOut
 			}
 			modelID, err := resolveCollectibleAttribute(ctx, tx, "star_gift_collectible_models", revision.ID, req.ModelAttributeID)
@@ -401,7 +401,7 @@ func (s *StarGiftUpgradeStore) UpgradeStarGift(ctx context.Context, req domain.S
 				return domain.ErrStarGiftAlreadyUpgraded
 			}
 
-			revision, err := lockActiveCollectibleRevision(ctx, tx, locked.GiftID)
+			revision, reserved, err := lockCollectibleRevisionForSavedGift(ctx, tx, locked.ID, locked.GiftID)
 			if err != nil {
 				return err
 			}
@@ -424,7 +424,7 @@ WHERE collectible_revision_id=$1 AND crafted
 					canCraftAt = starGiftCraftReadyAt(req.Date, s.lifecycle.CraftDelaySeconds)
 				}
 			}
-			if revision.Issued >= revision.SupplyTotal {
+			if !reserved && revision.Issued+revision.Reserved >= revision.SupplyTotal {
 				return domain.ErrStarGiftCollectibleSoldOut
 			}
 			if req.RequirePrepaid {
@@ -465,6 +465,13 @@ WHERE collectible_revision_id=$1 AND crafted
 				return fmt.Errorf("load upgrade gift title: %w", err)
 			}
 			slug := fmt.Sprintf("%s-%d", revision.SlugPrefix, num)
+			if reserved {
+				if tag, err := tx.Exec(ctx, `DELETE FROM star_gift_collectible_reservations WHERE saved_gift_id=$1`, locked.ID); err != nil {
+					return fmt.Errorf("consume collectible reservation: %w", err)
+				} else if tag.RowsAffected() != 1 {
+					return domain.ErrStarGiftCollectibleUnavailable
+				}
+			}
 			if _, err := tx.Exec(ctx, `
 INSERT INTO unique_star_gifts
     (id, gift_id, collectible_revision_id, source_saved_gift_id, title, slug, num,
@@ -902,6 +909,7 @@ SELECT p.id, p.owner_peer_type, p.owner_peer_id, p.from_user_id, p.gift_id, p.ca
 	   p.lifecycle_status, p.transfer_stars, p.can_export_at, p.can_transfer_at, p.can_resell_at,
 	   p.drop_original_details_stars, p.can_craft_at,
 	       p.message, p.message_entities::text, COALESCE(p.unique_gift_id, 0), p.upgrade_msg_id, p.pinned_order,
+	       EXISTS (SELECT 1 FROM star_gift_collectible_reservations reservation WHERE reservation.saved_gift_id=p.id),
        COALESCE((SELECT array_agg(i.collection_id ORDER BY c.sort_order, i.collection_id)
                  FROM star_gift_collection_items i
                  JOIN star_gift_collections c ON c.collection_id=i.collection_id
@@ -918,12 +926,12 @@ func lockActiveCollectibleRevision(ctx context.Context, tx pgx.Tx, giftID int64)
 	var revision domain.StarGiftCollectibleRevision
 	var status string
 	err := tx.QueryRow(ctx, `
-SELECT r.id, r.gift_id, r.upgrade_stars, r.supply_total, r.issued, r.slug_prefix, r.status
+SELECT r.id, r.gift_id, r.upgrade_stars, r.supply_total, r.issued, r.reserved, r.slug_prefix, r.status
 FROM star_gift_catalog c
 JOIN star_gift_collectible_revisions r ON r.id=c.collectible_revision_id
-WHERE c.gift_id=$1 FOR UPDATE OF r`, giftID).Scan(
+WHERE c.gift_id=$1 FOR UPDATE OF c, r`, giftID).Scan(
 		&revision.ID, &revision.GiftID, &revision.UpgradeStars, &revision.SupplyTotal,
-		&revision.Issued, &revision.SlugPrefix, &status)
+		&revision.Issued, &revision.Reserved, &revision.SlugPrefix, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.StarGiftCollectibleRevision{}, domain.ErrStarGiftCollectibleUnavailable
 	}
@@ -934,6 +942,41 @@ WHERE c.gift_id=$1 FOR UPDATE OF r`, giftID).Scan(
 		return domain.StarGiftCollectibleRevision{}, domain.ErrStarGiftCollectibleUnavailable
 	}
 	return revision, nil
+}
+
+// lockCollectibleRevisionForSavedGift resolves the exact release whose slot
+// was reserved at purchase time. Legacy/unreserved rows fall back to the
+// currently published release and may only consume public inventory.
+func lockCollectibleRevisionForSavedGift(ctx context.Context, tx pgx.Tx, savedGiftID, giftID int64) (domain.StarGiftCollectibleRevision, bool, error) {
+	var revisionID int64
+	err := tx.QueryRow(ctx, `
+SELECT collectible_revision_id
+FROM star_gift_collectible_reservations
+WHERE saved_gift_id=$1
+FOR UPDATE`, savedGiftID).Scan(&revisionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		revision, activeErr := lockActiveCollectibleRevision(ctx, tx, giftID)
+		return revision, false, activeErr
+	}
+	if err != nil {
+		return domain.StarGiftCollectibleRevision{}, false, fmt.Errorf("lock collectible reservation: %w", err)
+	}
+	var revision domain.StarGiftCollectibleRevision
+	var status string
+	err = tx.QueryRow(ctx, `
+SELECT id, gift_id, upgrade_stars, supply_total, issued, reserved, slug_prefix, status
+FROM star_gift_collectible_revisions
+WHERE id=$1
+FOR UPDATE`, revisionID).Scan(
+		&revision.ID, &revision.GiftID, &revision.UpgradeStars, &revision.SupplyTotal,
+		&revision.Issued, &revision.Reserved, &revision.SlugPrefix, &status)
+	if err != nil {
+		return domain.StarGiftCollectibleRevision{}, false, fmt.Errorf("lock reserved collectible revision: %w", err)
+	}
+	if revision.GiftID != giftID || status != "published" || revision.Reserved <= 0 || revision.Issued >= revision.SupplyTotal {
+		return domain.StarGiftCollectibleRevision{}, false, domain.ErrStarGiftCollectibleUnavailable
+	}
+	return revision, true, nil
 }
 
 func debitStarGiftUpgrade(ctx context.Context, tx pgx.Tx, userID, amount int64, peer domain.Peer, date int) (domain.StarsBalance, error) {

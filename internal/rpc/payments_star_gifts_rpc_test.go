@@ -32,6 +32,38 @@ type starsTopupRPCStore struct {
 	channel    domain.Channel
 }
 
+func TestResaleStarGiftAttributesHashFieldsStayPaired(t *testing.T) {
+	preview := domain.StarGiftUpgradePreview{
+		Revision: 7,
+		Backdrops: []domain.StarGiftCollectibleAttribute{{
+			Kind: domain.StarGiftCollectibleBackdrop, Name: "Blue", BackdropID: 1,
+			RarityKind: domain.StarGiftRarityUncommon,
+		}},
+	}
+
+	cacheHit := &tg.PaymentsResaleStarGifts{Gifts: []tg.StarGiftClass{}, Chats: []tg.ChatClass{}, Users: []tg.UserClass{}}
+	setResaleStarGiftAttributesOnHashMiss(cacheHit, 7, preview)
+	if _, ok := cacheHit.GetAttributesHash(); ok {
+		t.Fatal("cache hit set the shared attributes flag")
+	}
+	var hitBuffer bin.Buffer
+	if err := cacheHit.Encode(&hitBuffer); err != nil {
+		t.Fatalf("encode cache-hit resale response: %v", err)
+	}
+
+	cacheMiss := &tg.PaymentsResaleStarGifts{Gifts: []tg.StarGiftClass{}, Chats: []tg.ChatClass{}, Users: []tg.UserClass{}}
+	setResaleStarGiftAttributesOnHashMiss(cacheMiss, 0, preview)
+	attributes, attributesOK := cacheMiss.GetAttributes()
+	hash, hashOK := cacheMiss.GetAttributesHash()
+	if !attributesOK || !hashOK || len(attributes) != 1 || hash != 7 {
+		t.Fatalf("cache miss attributes/hash = %d/%v %d/%v, want one/true 7/true", len(attributes), attributesOK, hash, hashOK)
+	}
+	var missBuffer bin.Buffer
+	if err := cacheMiss.Encode(&missBuffer); err != nil {
+		t.Fatalf("encode cache-miss resale response: %v", err)
+	}
+}
+
 func devStarsCredentials(formID int64) *tg.InputPaymentCredentials {
 	return &tg.InputPaymentCredentials{Data: tg.DataJSON{Data: fmt.Sprintf(`{"type":"telesrv_dev","form_id":"%d"}`, formID)}}
 }
@@ -107,6 +139,15 @@ func starGiftTestRouter(t *testing.T) (*Router, domain.User, domain.User, domain
 
 func starGiftTestRouterWithPremium(t *testing.T, requirePremium bool) (*Router, domain.User, domain.User, domain.StarGift) {
 	t.Helper()
+	gift := domain.StarGift{
+		ID: 8001, RevisionID: 9001, Stars: 50, ConvertStars: 50, Title: "Cake", RequirePremium: requirePremium,
+		Sticker: domain.Document{ID: 700, AccessHash: 7, DCID: 2, MimeType: "application/x-tgsticker", Attributes: []domain.DocumentAttribute{{Kind: domain.DocAttrSticker}}},
+	}
+	return starGiftTestRouterWithGift(t, gift)
+}
+
+func starGiftTestRouterWithGift(t *testing.T, gift domain.StarGift) (*Router, domain.User, domain.User, domain.StarGift) {
+	t.Helper()
 	ctx := context.Background()
 	users := memory.NewUserStore()
 	dialogs := memory.NewDialogStore()
@@ -120,10 +161,6 @@ func starGiftTestRouterWithPremium(t *testing.T, requirePremium bool) (*Router, 
 	if err != nil {
 		t.Fatalf("create recipient: %v", err)
 	}
-	gift := domain.StarGift{
-		ID: 8001, RevisionID: 9001, Stars: 50, ConvertStars: 50, Title: "Cake", RequirePremium: requirePremium,
-		Sticker: domain.Document{ID: 700, AccessHash: 7, DCID: 2, MimeType: "application/x-tgsticker", Attributes: []domain.DocumentAttribute{{Kind: domain.DocAttrSticker}}},
-	}
 	giftStore := memory.NewStarGiftStore()
 	giftStore.SeedCatalog([]domain.StarGift{gift})
 	gifts := appstargifts.NewService(giftStore, nil, 2)
@@ -136,6 +173,37 @@ func starGiftTestRouterWithPremium(t *testing.T, requirePremium bool) (*Router, 
 		Gifts:    gifts,
 	}, zaptest.NewLogger(t), clock.System)
 	return r, sender, recipient, gift
+}
+
+func TestStarGiftExhaustedCollectibleIsSoldOutAndCannotBePurchased(t *testing.T) {
+	gift := domain.StarGift{
+		ID: 8001, RevisionID: 9001, Stars: 50, ConvertStars: 50, Title: "Sold Out Cake",
+		UpgradeStars: 25, UpgradeIssued: 5, UpgradeTotal: 5,
+		Sticker: domain.Document{ID: 700, AccessHash: 7, DCID: 2, MimeType: "application/x-tgsticker", Attributes: []domain.DocumentAttribute{{Kind: domain.DocAttrSticker}}},
+	}
+	r, sender, recipient, gift := starGiftTestRouterWithGift(t, gift)
+	ctx := WithUserID(context.Background(), sender.ID)
+
+	catalogClass, err := r.onPaymentsGetStarGifts(ctx, 0)
+	if err != nil {
+		t.Fatalf("get sold-out catalog: %v", err)
+	}
+	catalog, ok := catalogClass.(*tg.PaymentsStarGifts)
+	if !ok || len(catalog.Gifts) != 1 {
+		t.Fatalf("sold-out catalog = %T %+v", catalogClass, catalogClass)
+	}
+	projected, ok := catalog.Gifts[0].(*tg.StarGift)
+	if !ok || !projected.Limited || !projected.SoldOut || projected.AvailabilityRemains != 0 || projected.AvailabilityTotal != 5 {
+		t.Fatalf("sold-out gift projection = %T %+v", catalog.Gifts[0], catalog.Gifts[0])
+	}
+
+	inv := &tg.InputInvoiceStarGift{
+		Peer:   &tg.InputPeerUser{UserID: recipient.ID, AccessHash: recipient.AccessHash},
+		GiftID: gift.ID,
+	}
+	if _, err := r.onPaymentsGetPaymentForm(ctx, &tg.PaymentsGetPaymentFormRequest{Invoice: inv}); !tgerr.Is(err, "STARGIFT_INVALID") {
+		t.Fatalf("sold-out gift form err = %v, want STARGIFT_INVALID", err)
+	}
 }
 
 func TestStarGiftPurchaseRequiresActivePremium(t *testing.T) {
@@ -662,6 +730,26 @@ func TestSavedStarGiftProjectionCombinesHistoricalCatalogWithCurrentCollectibleA
 	}
 	if _, ok := soldOutPrepaid.GetUpgradeStars(); ok {
 		t.Fatal("sold-out prepaid gift must not expose stale prepaid upgrade_stars")
+	}
+
+	// The aggregate is full because this exact gift owns one of the reservations.
+	// Its profile card must retain the paid price so clients choose the invoice
+	// path instead of incorrectly attempting a free/prepaid direct upgrade.
+	saved.PrepaidUpgradeStars = 0
+	saved.HasCollectibleReservation = true
+	reserved := tgSavedStarGifts(0, []domain.SavedStarGift{saved}, map[int64]domain.StarGift{historical.RevisionID: historical}, availability)[0]
+	if !reserved.CanUpgrade {
+		t.Fatal("reserved gift must remain upgradable when the aggregate pool is full")
+	}
+	reservedGift, ok := reserved.Gift.(*tg.StarGift)
+	if !ok {
+		t.Fatalf("reserved inner = %T, want *tg.StarGift", reserved.Gift)
+	}
+	if upgradeStars, set := reservedGift.GetUpgradeStars(); !set || upgradeStars != 75 {
+		t.Fatalf("reserved upgrade_stars = %d set=%v, want paid price 75", upgradeStars, set)
+	}
+	if prepaidStars, set := reserved.GetUpgradeStars(); set || prepaidStars != 0 {
+		t.Fatalf("reserved outer upgrade_stars = %d set=%v, want non-prepaid", prepaidStars, set)
 	}
 }
 
@@ -2015,6 +2103,31 @@ func TestStarsTopupInvoiceFallbackCreditsBalance(t *testing.T) {
 	}
 	if !hasTopup {
 		t.Fatalf("transactions missing topup %d: %+v", opt.Stars, page.Transactions)
+	}
+}
+
+func TestDevStarsPurchasesCanBeDisabledWithoutBlockingExistingBalances(t *testing.T) {
+	r, sender, _, _ := starGiftTestRouter(t)
+	r.cfg.DevStarsPurchaseBlocked = true
+	ctx := WithUserID(context.Background(), sender.ID)
+
+	if options, err := r.onPaymentsGetStarsGiftOptions(ctx, nil); err != nil || len(options) != 0 {
+		t.Fatalf("blocked Stars gift options = %+v err %v", options, err)
+	}
+	if options, err := r.onPaymentsGetStarsGiveawayOptions(ctx); err != nil || len(options) != 0 {
+		t.Fatalf("blocked giveaway options = %+v err %v", options, err)
+	}
+	inv := &tg.InputInvoiceStars{Purpose: &tg.InputStorePaymentStarsTopup{Stars: 1000, Currency: "USD", Amount: 99}}
+	if _, err := r.onPaymentsGetPaymentForm(ctx, &tg.PaymentsGetPaymentFormRequest{Invoice: inv}); !tgerr.Is(err, "STARS_PURCHASE_BLOCKED") {
+		t.Fatalf("blocked Stars form err = %v", err)
+	}
+	if _, err := r.onPaymentsSendPaymentForm(ctx, &tg.PaymentsSendPaymentFormRequest{
+		FormID: 1, Invoice: inv, Credentials: devStarsCredentials(1),
+	}); !tgerr.Is(err, "STARS_PURCHASE_BLOCKED") {
+		t.Fatalf("blocked Stars settlement err = %v", err)
+	}
+	if balance, err := r.deps.Stars.GetBalance(context.Background(), sender.ID); err != nil || balance.Balance != 1000 {
+		t.Fatalf("existing Stars balance = %+v err %v, want 1000 unchanged", balance, err)
 	}
 }
 

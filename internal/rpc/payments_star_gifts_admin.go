@@ -47,6 +47,9 @@ func (r *Router) AdminGrantStarGift(ctx context.Context, grant domain.AdminStarG
 	if !ok {
 		return fmt.Errorf("gift %d not found", grant.GiftID)
 	}
+	if gift.UpgradeStars > 0 && !gift.CollectibleUpgradeAvailable() {
+		return fmt.Errorf("gift %d collectible supply is exhausted", gift.ID)
+	}
 	if grant.Upgrade {
 		return r.adminGrantUpgradedStarGift(ctx, senderID, gift, grant)
 	}

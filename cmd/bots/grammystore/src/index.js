@@ -45,9 +45,9 @@ async function deliverLoginCode(recipient, code, chatIDs) {
     }
     catch (error) { console.error("OTP delivery failed", chatID, error); }
   }
-  if (!delivered) for (const owner of config.ownerIDs) {
-    await bot.api.sendMessage(owner, loginCodeMessage(languageByChatID(owner), recipient, code, true), { parse_mode: "HTML" }).catch(() => {});
-  }
+  // An OTP may only be delivered to the number owner or an explicitly granted
+  // code-access chat. Falling back to administrators leaks login credentials.
+  if (!delivered && chatIDs.length === 0) console.warn("OTP recipient has no bound bot chat", recipient);
 }
 
 const server = http.createServer((request, response) => {
@@ -79,9 +79,25 @@ server.listen(config.codePort, config.codeHost, () => console.log(`OTP webhook l
 const me = await bot.api.getMe();
 bot.botInfo = me;
 console.log(`Starting @${me.username}`);
+await bot.api.deleteMyCommands().catch(() => {});
+await bot.api.deleteMyCommands({ language_code: "ru" }).catch(() => {});
+await bot.api.deleteMyCommands({ language_code: "en" }).catch(() => {});
 await bot.api.setMyCommands(commandList(config.defaultLanguage));
 await bot.api.setMyCommands(commandList("ru"), { language_code: "ru" });
 await bot.api.setMyCommands(commandList("en"), { language_code: "en" });
+await bot.api.setChatMenuButton({ menu_button: { type: "commands" } }).catch(() => {});
+
+const keyboardCacheVersion = "inline-menu-2026-08-11-v3";
+if (db.getSetting("keyboard_cache_version") !== keyboardCacheVersion) {
+  for (const user of db.users()) {
+    const language = normalizeLanguage(user.language, config.defaultLanguage);
+    await bot.api.sendMessage(user.chat_id, translate(language, "menuCacheReset"), {
+      reply_markup: { remove_keyboard: true },
+    }).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 35));
+  }
+  db.setSetting("keyboard_cache_version", keyboardCacheVersion);
+}
 
 let stopping = false;
 async function shutdown(signal) {

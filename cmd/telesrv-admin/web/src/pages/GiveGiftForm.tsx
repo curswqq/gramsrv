@@ -34,7 +34,10 @@ export function GiveGiftForm({ gift, onDone }: { gift: StarGiftRow; onDone?: () 
   const [busy, setBusy] = useState(false);
 
   const recipientID = kind === "user" ? user?.ID ?? 0 : channel?.ID ?? 0;
-  const upgradable = kind === "user" && upgrade;
+  const hasCollectiblePool = Number(gift.UpgradeStars ?? 0) > 0 && (gift.UpgradeSupply ?? 0) > 0;
+  const upgradeAvailable = hasCollectiblePool && (gift.UpgradeIssued ?? 0) < gift.UpgradeSupply;
+  const collectibleSoldOut = hasCollectiblePool && !upgradeAvailable;
+  const upgradable = kind === "user" && upgrade && upgradeAvailable;
 
   // Reset the collectible selection whenever the chosen gift changes; the
   // recipient/sender/message are intentionally preserved for fast re-issuing.
@@ -48,6 +51,15 @@ export function GiveGiftForm({ gift, onDone }: { gift: StarGiftRow; onDone?: () 
     setResult(null);
     setError("");
   }, [gift.GiftID]);
+
+  useEffect(() => {
+    if (upgradeAvailable) return;
+    setUpgrade(false);
+    setPreview(null);
+    setModelID("0");
+    setPatternID("0");
+    setBackdropID("0");
+  }, [upgradeAvailable]);
 
   useEffect(() => {
     if (!upgradable || preview) return;
@@ -147,10 +159,15 @@ export function GiveGiftForm({ gift, onDone }: { gift: StarGiftRow; onDone?: () 
       {kind === "user" && (
         <>
           <label className="gift-switch">
-            <input type="checkbox" checked={upgrade} onChange={(event) => { setUpgrade(event.target.checked); if (!event.target.checked) { setModelID("0"); setPatternID("0"); setBackdropID("0"); } setResult(null); }} />
+            <input type="checkbox" checked={upgrade} disabled={!upgradeAvailable} onChange={(event) => { setUpgrade(event.target.checked); if (!event.target.checked) { setModelID("0"); setPatternID("0"); setBackdropID("0"); } setResult(null); }} />
             <span className="gift-switch-track" aria-hidden="true"><span /></span>
             <span>{t("giveGift.upgrade")}</span>
           </label>
+          <p className={`give-gift-upgrade-note ${upgradeAvailable ? "" : "unavailable"}`}>
+            {hasCollectiblePool
+              ? t(upgradeAvailable ? "giveGift.upgradeSupply" : "giveGift.upgradeExhausted", { issued: gift.UpgradeIssued, total: gift.UpgradeSupply })
+              : t("giveGift.upgradeUnavailable")}
+          </p>
           {upgrade && <p className="give-gift-upgrade-note">{t("giveGift.upgradeNote")}</p>}
           {upgrade && previewError && <Alert>{previewError}</Alert>}
           {upgrade && preview && (
@@ -206,11 +223,11 @@ export function GiveGiftForm({ gift, onDone }: { gift: StarGiftRow; onDone?: () 
       )}
 
       <div className="give-gift-form-actions">
-        <button className="btn icon-text" type="button" onClick={() => run(false)} disabled={busy}>
+        <button className="btn icon-text" type="button" onClick={() => run(false)} disabled={busy || collectibleSoldOut}>
           {busy ? <Loader2 size={15} className="spin" /> : <Play size={15} />}
           {result ? t("action.runAgain") : t("action.runDry")}
         </button>
-        <button className="btn primary icon-text" type="button" onClick={() => run(true)} disabled={busy || !canConfirm}>
+        <button className="btn primary icon-text" type="button" onClick={() => run(true)} disabled={busy || collectibleSoldOut || !canConfirm}>
           <Gift size={15} />
           {t("giveGift.confirm")}
         </button>

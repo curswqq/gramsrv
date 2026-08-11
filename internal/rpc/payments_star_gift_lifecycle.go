@@ -495,24 +495,31 @@ func (r *Router) onPaymentsGetResaleStarGifts(ctx context.Context, req *tg.Payme
 			return nil, internalErr()
 		}
 		if found {
-			hash := int64(preview.Revision)
-			out.SetAttributesHash(hash)
-			if attributesHash != hash {
-				attributes := make([]tg.StarGiftAttributeClass, 0, len(preview.Models)+len(preview.Patterns)+len(preview.Backdrops))
-				for _, attribute := range preview.Models {
-					attributes = append(attributes, tgStarGiftAttribute(attribute))
-				}
-				for _, attribute := range preview.Patterns {
-					attributes = append(attributes, tgStarGiftAttribute(attribute))
-				}
-				for _, attribute := range preview.Backdrops {
-					attributes = append(attributes, tgStarGiftAttribute(attribute))
-				}
-				out.SetAttributes(attributes)
-			}
+			setResaleStarGiftAttributesOnHashMiss(out, attributesHash, preview)
 		}
 	}
 	return out, nil
+}
+
+func setResaleStarGiftAttributesOnHashMiss(out *tg.PaymentsResaleStarGifts, requestedHash int64, preview domain.StarGiftUpgradePreview) {
+	hash := int64(preview.Revision)
+	if out == nil || requestedHash == hash {
+		return
+	}
+	attributes := make([]tg.StarGiftAttributeClass, 0, len(preview.Models)+len(preview.Patterns)+len(preview.Backdrops))
+	for _, list := range [][]domain.StarGiftCollectibleAttribute{preview.Models, preview.Patterns, preview.Backdrops} {
+		for _, attribute := range list {
+			if projected := tgStarGiftAttribute(attribute); projected != nil {
+				attributes = append(attributes, projected)
+			}
+		}
+	}
+	// attributes and attributes_hash share the same TL flag. Setting only the
+	// hash leaves an explicitly present interface vector nil, which canonical
+	// encoders correctly reject. Return both fields on a cache miss and neither
+	// field on a cache hit.
+	out.SetAttributes(attributes)
+	out.SetAttributesHash(hash)
 }
 
 func (r *Router) onPaymentsUpdateStarGiftPrice(ctx context.Context, req *tg.PaymentsUpdateStarGiftPriceRequest) (tg.UpdatesClass, error) {

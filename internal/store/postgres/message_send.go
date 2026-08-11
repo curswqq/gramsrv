@@ -260,6 +260,10 @@ func (s *MessageStore) sendPrivateTextOnce(ctx context.Context, req domain.SendP
 			return domain.SendPrivateTextResult{}, err
 		}
 	}
+	senderStarsBalance, recipientStarsBalance, err := chargePrivatePaidMessageTx(ctx, tx, req)
+	if err != nil {
+		return domain.SendPrivateTextResult{}, err
+	}
 	media := privateSendMediaProjection{Shared: req.Media, Sender: req.Media, Recipient: req.Media}
 	if hooks.projectMedia != nil {
 		media, err = hooks.projectMedia(ctx, tx, &req)
@@ -308,6 +312,7 @@ func (s *MessageStore) sendPrivateTextOnce(ctx context.Context, req domain.SendP
 		ViaBotID:           req.ViaBotID,
 		GroupedID:          req.GroupedID,
 		Effect:             req.Effect,
+		PaidMessageStars:   req.PaidMessageStars,
 	}
 	applyCreatePrivateMessageMetadata(&privateArg, senderMeta)
 	pm, err := qtx.CreatePrivateMessage(ctx, privateArg)
@@ -406,6 +411,7 @@ WHERE sender_user_id=$1 AND id=$2`, req.SenderUserID, pm.ID, sharedMediaJSON)
 		ViaBotID:         req.ViaBotID,
 		GroupedID:        req.GroupedID,
 		Effect:           req.Effect,
+		PaidMessageStars: req.PaidMessageStars,
 		// voice/round 在发送者自己的副本上也保持"未听"，直到对端
 		// readMessageContents 触发 sender 侧清除；发给自己无人可听，恒已读。
 		MediaUnread:    media.Sender.HasUnreadPayload() && !selfMessage,
@@ -479,6 +485,7 @@ WHERE sender_user_id=$1 AND id=$2`, req.SenderUserID, pm.ID, sharedMediaJSON)
 			ViaBotID:         req.ViaBotID,
 			GroupedID:        req.GroupedID,
 			Effect:           req.Effect,
+			PaidMessageStars: req.PaidMessageStars,
 			MediaUnread:      media.Recipient.HasUnreadPayload(),
 			ReactionUnread:   false,
 		}
@@ -548,10 +555,12 @@ WHERE sender_user_id = $1
 		return domain.SendPrivateTextResult{}, fmt.Errorf("save private send receipt: private message %d already has or lost its immutable receipt", pm.ID)
 	}
 	result := domain.SendPrivateTextResult{
-		SenderMessage:    sender,
-		RecipientMessage: recipient,
-		SenderEvent:      eventFromMessage(sender),
-		RecipientEvent:   eventFromMessage(recipient),
+		SenderMessage:         sender,
+		RecipientMessage:      recipient,
+		SenderEvent:           eventFromMessage(sender),
+		RecipientEvent:        eventFromMessage(recipient),
+		SenderStarsBalance:    senderStarsBalance,
+		RecipientStarsBalance: recipientStarsBalance,
 	}
 	if hooks.after != nil {
 		if err := hooks.after(ctx, tx, result); err != nil {

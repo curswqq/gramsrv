@@ -217,6 +217,46 @@ func (r *Router) onMessagesGetSavedGifs(ctx context.Context, hash int64) (tg.Mes
 	if err != nil {
 		return nil, internalErr()
 	}
+	// The admin GIF catalog is a server-wide collection. Historically it was
+	// only exposed through inline @gif, while the native GIF panel asks for
+	// messages.getSavedGifs. Merge it here, keeping the curated order and then
+	// the user's own saved GIFs, so an upload becomes visible on every client.
+	if source, ok := r.deps.Files.(interface {
+		ListGifCatalog(context.Context, bool) ([]domain.GifCatalogEntry, error)
+	}); ok {
+		entries, listErr := source.ListGifCatalog(ctx, true)
+		if listErr != nil {
+			return nil, internalErr()
+		}
+		ids := make([]int64, 0, len(entries))
+		for _, entry := range entries {
+			if entry.DocumentID != 0 {
+				ids = append(ids, entry.DocumentID)
+			}
+		}
+		catalogDocs, resolveErr := r.deps.Files.GetDocuments(ctx, ids)
+		if resolveErr != nil {
+			return nil, internalErr()
+		}
+		byID := documentsByID(catalogDocs)
+		merged := make([]domain.Document, 0, len(ids)+len(docs))
+		seen := make(map[int64]struct{}, len(ids)+len(docs))
+		for _, id := range ids {
+			doc, found := byID[id]
+			if !found || !doc.IsGif() {
+				continue
+			}
+			merged = append(merged, doc)
+			seen[id] = struct{}{}
+		}
+		for _, doc := range docs {
+			if _, duplicate := seen[doc.ID]; duplicate {
+				continue
+			}
+			merged = append(merged, doc)
+		}
+		docs = merged
+	}
 	catalogHash := stickerDocumentsHash(docs)
 	if hash != 0 && hash == catalogHash {
 		return &tg.MessagesSavedGifsNotModified{}, nil

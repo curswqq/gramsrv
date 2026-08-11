@@ -269,6 +269,21 @@ func TestNativePremiumSubscriptionMapsMonthlyAndUpgradePlans(t *testing.T) {
 	}
 }
 
+func TestNativePremiumSubscriptionRejectsActiveSelf(t *testing.T) {
+	r, _, users, buyer, _ := premiumRPCTestRouter(t)
+	const premiumUntil = 1_800_086_400
+	if _, err := users.SetPremiumUntil(context.Background(), buyer.ID, premiumUntil); err != nil {
+		t.Fatalf("set buyer Premium: %v", err)
+	}
+	ctx := WithUserID(context.Background(), buyer.ID)
+	_, err := r.resolvePremiumInvoice(ctx, buyer.ID, &tg.InputInvoiceStars{
+		Purpose: &tg.InputStorePaymentPremiumSubscription{},
+	})
+	if !tgerr.Is(err, "PREMIUM_SUB_ACTIVE_UNTIL") || !tgerr.IsCode(err, 420) {
+		t.Fatalf("active self Premium err=%v, want code 420 PREMIUM_SUB_ACTIVE_UNTIL", err)
+	}
+}
+
 func TestPremiumGiftInvoiceRejectsSelfBotAndBadEntityBounds(t *testing.T) {
 	r, _, users, buyer, recipient := premiumRPCTestRouter(t)
 	ctx := WithUserID(context.Background(), buyer.ID)

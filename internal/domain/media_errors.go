@@ -8,6 +8,7 @@ var (
 	ErrFilePartInvalid     = errors.New("file part invalid")
 	ErrFilePartsInvalid    = errors.New("file parts invalid")
 	ErrFilePartTooBig      = errors.New("file part too big")
+	ErrFileTooBig          = errors.New("file too big")
 	ErrUploadQuotaExceeded = errors.New("upload quota exceeded")
 	// ErrStorageFull means the configured storage capacity guard rejected a
 	// write. It is distinct from per-account upload quota and must not be mapped

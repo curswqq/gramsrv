@@ -757,6 +757,8 @@ func (r *Router) resolveInputChatPhoto(ctx context.Context, userID int64, input 
 
 func photoUploadErr(err error) error {
 	switch {
+	case errors.Is(err, domain.ErrFileTooBig):
+		return fileTooBigErr()
 	case errors.Is(err, domain.ErrFilePartsInvalid):
 		return filePartsInvalidErr()
 	case errors.Is(err, domain.ErrPhotoInvalid):

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"telesrv/internal/domain"
@@ -53,6 +54,81 @@ func TestProjectPrivateStarGiftPurchaseScopesViewerCapabilities(t *testing.T) {
 	bad.RecipientUserID = 300
 	if _, err := projectPrivateStarGiftPurchase(context.Background(), nil, &bad); err == nil {
 		t.Fatal("mismatched gift owner and recipient was accepted")
+	}
+}
+
+func TestProjectPrivateStarGiftTransferScopesParticipantNames(t *testing.T) {
+	media := &domain.MessageMedia{
+		Kind: domain.MessageMediaKindService,
+		ServiceAction: &domain.MessageServiceAction{
+			Kind: domain.MessageServiceActionStarGiftUnique,
+			StarGiftUnique: &domain.MessageStarGiftUniqueAction{
+				FromUserID:  100,
+				Transferred: true,
+				Saved:       true,
+			},
+		},
+	}
+	req := &domain.SendPrivateTextRequest{SenderUserID: 100, RecipientUserID: 200, Media: media}
+	projection, err := projectPrivateStarGiftTransfer(context.Background(), nil, req)
+	if err != nil {
+		t.Fatalf("project transfer: %v", err)
+	}
+	shared := privateStarGiftUniqueAction(projection.Shared)
+	sender := privateStarGiftUniqueAction(projection.Sender)
+	recipient := privateStarGiftUniqueAction(projection.Recipient)
+	if shared == nil || shared.FromUserID != 100 {
+		t.Fatalf("shared from_user_id = %+v, want actual sender 100", shared)
+	}
+	if sender == nil || sender.FromUserID != 200 {
+		t.Fatalf("sender from_user_id = %+v, want recipient 200", sender)
+	}
+	if recipient == nil || recipient.FromUserID != 100 {
+		t.Fatalf("recipient from_user_id = %+v, want sender 100", recipient)
+	}
+	if original := privateStarGiftUniqueAction(media); original == nil || original.FromUserID != 100 {
+		t.Fatalf("source projection was mutated: %+v", original)
+	}
+
+	bad := *req
+	bad.Media = &domain.MessageMedia{Kind: domain.MessageMediaKindService}
+	if _, err := projectPrivateStarGiftTransfer(context.Background(), nil, &bad); err == nil {
+		t.Fatal("invalid transfer action was accepted")
+	}
+}
+
+func TestStarGiftResaleMessageUsesBuyerAsGiftSender(t *testing.T) {
+	toUser := domain.StarGiftResalePurchaseRequest{
+		BuyerUserID: 100,
+		To:          domain.Peer{Type: domain.PeerTypeUser, ID: 200},
+	}
+	if sender, recipient := starGiftResaleMessageUsers(toUser); sender != 100 || recipient != 200 {
+		t.Fatalf("user resale participants = %d -> %d, want buyer 100 -> recipient 200", sender, recipient)
+	}
+	toSelf := toUser
+	toSelf.To.ID = toSelf.BuyerUserID
+	if sender, recipient := starGiftResaleMessageUsers(toSelf); sender != 100 || recipient != 100 {
+		t.Fatalf("self resale participants = %d -> %d, want buyer self-message", sender, recipient)
+	}
+	toChannel := toUser
+	toChannel.To = domain.Peer{Type: domain.PeerTypeChannel, ID: 300}
+	if sender, recipient := starGiftResaleMessageUsers(toChannel); sender != domain.OfficialSystemUserID || recipient != 100 {
+		t.Fatalf("channel resale notification = %d -> %d, want system -> buyer", sender, recipient)
+	}
+}
+
+func TestSavedStarGiftUserRefAcceptsPrimaryUpgradeAndAliasMessages(t *testing.T) {
+	where, args := savedStarGiftRefWhere(domain.SavedStarGiftRef{
+		Owner: domain.Peer{Type: domain.PeerTypeUser, ID: 100},
+		MsgID: 42,
+	})
+	for _, fragment := range []string{"msg_id = $3", "upgrade_msg_id = $3", "star_gift_user_message_refs"} {
+		if !strings.Contains(where, fragment) {
+			t.Fatalf("user gift reference query %q is missing %q", where, fragment)
+		}
+	}
+	if len(args) != 3 || args[2] != 42 {
+		t.Fatalf("user gift reference args = %#v, want message id 42", args)
 	}
 }
 

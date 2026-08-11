@@ -369,6 +369,8 @@ type Config struct {
 	UploadInFlightMaxParts int
 	// UploadInFlightMaxFiles 是单用户未组装 file_id 数上限；<=0 表示不限。
 	UploadInFlightMaxFiles int
+	// UploadMaxFileBytes is the assembled size cap for one client-uploaded file; <=0 means unlimited.
+	UploadMaxFileBytes int64
 
 	// CallRingTimeout 是私聊通话服务端兜底超时（振铃/Accepted 悬挂），与下发给
 	// 客户端的 callRingTimeoutMs（compat/tdesktop/config.go，90000ms）同源。
@@ -407,6 +409,9 @@ type Config struct {
 	// StarsStartingGrant 是 Stars 本地账本的起始余额（首读时惰性授予、granted 布尔幂等，
 	// 新老账号都覆盖、免回填迁移）；0 关闭自动授予。
 	StarsStartingGrant int64
+	// DevStarsPurchaseEnabled exposes the local test checkout used during
+	// development. Production deployments should leave it disabled.
+	DevStarsPurchaseEnabled bool
 	// PremiumSweepInterval 是会员到期 sweeper 的轮询间隔。premium 下发正确性
 	// 由读取路径即时派生，sweeper 只负责清理过期行并推 updateUser 通知。
 	PremiumSweepInterval time.Duration
@@ -877,6 +882,7 @@ func Load() (Config, error) {
 		UploadInFlightMaxBytes: envInt64Or("TELESRV_UPLOAD_INFLIGHT_MAX_BYTES", 4194304000),
 		UploadInFlightMaxParts: envIntOr("TELESRV_UPLOAD_INFLIGHT_MAX_PARTS", 8000),
 		UploadInFlightMaxFiles: envIntOr("TELESRV_UPLOAD_INFLIGHT_MAX_FILES", 64),
+		UploadMaxFileBytes:     envInt64Or("TELESRV_UPLOAD_MAX_FILE_BYTES", 0),
 
 		CallRingTimeout:        envDurationOr("TELESRV_CALL_RING_TIMEOUT", 90*time.Second),
 		CallTombstoneTTL:       envDurationOr("TELESRV_CALL_TOMBSTONE_TTL", 60*time.Second),
@@ -893,6 +899,7 @@ func Load() (Config, error) {
 		PasskeyRPID:                      envOr("TELESRV_PASSKEY_RP_ID", "telesrv.net"),
 		PasskeyAllowedOrigins:            envListOr("TELESRV_PASSKEY_ALLOWED_ORIGINS", nil),
 		StarsStartingGrant:               int64(envIntOr("TELESRV_STARS_STARTING_GRANT", 1000)),
+		DevStarsPurchaseEnabled:          envBoolOr("TELESRV_DEV_STARS_PURCHASE_ENABLED", false),
 		PremiumSweepInterval:             envDurationOr("TELESRV_PREMIUM_SWEEP_INTERVAL", time.Minute),
 		PremiumSweepBatch:                envIntOr("TELESRV_PREMIUM_SWEEP_BATCH", 500),
 		StarGiftSweepInterval:            envDurationOr("TELESRV_STARGIFT_SWEEP_INTERVAL", 15*time.Second),
@@ -909,7 +916,7 @@ func Load() (Config, error) {
 		StarGiftCraftChancePermille:      envIntOr("TELESRV_STARGIFT_CRAFT_CHANCE_PERMILLE", 250),
 
 		RatingEnabled:           envBoolOr("TELESRV_RATING_ENABLED", true),
-		RatingPendingDelay:      envDurationOr("TELESRV_RATING_PENDING_DELAY", 24*time.Hour),
+		RatingPendingDelay:      envDurationOr("TELESRV_RATING_PENDING_DELAY", 0),
 		RatingRecomputeInterval: envDurationOr("TELESRV_RATING_RECOMPUTE_INTERVAL", 15*time.Minute),
 		RatingRecomputeBatch:    envIntOr("TELESRV_RATING_RECOMPUTE_BATCH", 500),
 		RatingStaleAfter:        envDurationOr("TELESRV_RATING_STALE_AFTER", 6*time.Hour),

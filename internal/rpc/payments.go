@@ -36,6 +36,9 @@ func (r *Router) registerPayments(d *tlprofile.Dispatcher) {
 		// Premium gift options come from the same versioned XTR catalog used by
 		// payment forms and settlement.
 		error) {
+		if r.cfg.DevStarsPurchaseBlocked {
+			return []tg.StarsTopupOption{}, nil
+		}
 		return devStarsTopupOptions(), nil
 	})
 	registerRPC[*tg.PaymentsGetPremiumGiftCodeOptionsRequest](d, tlprofile.SemanticMethodPaymentsGetPremiumGiftCodeOptions, func(ctx context.Context, req *tg.PaymentsGetPremiumGiftCodeOptionsRequest) (any, error) {

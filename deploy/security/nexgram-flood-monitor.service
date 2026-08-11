@@ -1,0 +1,29 @@
+[Unit]
+Description=NexGram flood detection and bot notifications
+After=network-online.target nexgram-flood-guard.service
+Wants=network-online.target
+Requires=nexgram-flood-guard.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/telesrv-grammy-bot.env
+EnvironmentFile=-/etc/nexgram/flood-monitor.env
+ExecStart=/usr/bin/python3 /usr/local/lib/nexgram/flood-monitor.py
+Restart=always
+RestartSec=5
+StateDirectory=nexgram-flood-guard
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target

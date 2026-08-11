@@ -21,6 +21,7 @@ func (s *StarGiftLifecycleStore) PrepaidUpgradeTarget(ctx context.Context, owner
 p.msg_id,p.saved_id,p.gift_date,p.name_hidden,p.unsaved,p.converted,p.convert_stars,p.prepaid_upgrade_stars,p.prepaid_upgrade_hash,p.gift_num,
 p.lifecycle_status,p.transfer_stars,p.can_export_at,p.can_transfer_at,p.can_resell_at,p.drop_original_details_stars,p.can_craft_at,
 p.message,p.message_entities::text,COALESCE(p.unique_gift_id,0),p.upgrade_msg_id,p.pinned_order,
+EXISTS (SELECT 1 FROM star_gift_collectible_reservations reservation WHERE reservation.saved_gift_id=p.id),
 COALESCE((SELECT array_agg(i.collection_id ORDER BY c.sort_order,i.collection_id) FROM star_gift_collection_items i
 JOIN star_gift_collections c ON c.collection_id=i.collection_id WHERE i.saved_gift_id=p.id),ARRAY[]::integer[])
 FROM peer_star_gifts p WHERE p.owner_peer_type=$1 AND p.owner_peer_id=$2 AND p.prepaid_upgrade_hash=$3`,
@@ -91,8 +92,8 @@ func (s *StarGiftLifecycleStore) PrepayStarGiftUpgrade(ctx context.Context, req 
 		if err != nil || locked.ID != target.ID || !locked.LifecycleStatus.Live() || locked.UniqueGiftID != 0 || locked.PrepaidUpgradeStars != 0 {
 			return domain.ErrStarGiftCollectibleUnavailable
 		}
-		revision, err := lockActiveCollectibleRevision(ctx, tx, locked.GiftID)
-		if err != nil || revision.UpgradeStars != req.ChargeStars || revision.Issued >= revision.SupplyTotal {
+		revision, reserved, err := lockCollectibleRevisionForSavedGift(ctx, tx, locked.ID, locked.GiftID)
+		if err != nil || revision.UpgradeStars != req.ChargeStars || (!reserved && revision.Issued+revision.Reserved >= revision.SupplyTotal) {
 			return domain.ErrStarGiftCollectibleUnavailable
 		}
 		balance, err := s.debitLifecycleAmount(ctx, tx, req.PayerUserID,
@@ -181,6 +182,7 @@ func lockSavedStarGiftByPrepayHash(ctx context.Context, tx pgx.Tx, owner domain.
 p.msg_id,p.saved_id,p.gift_date,p.name_hidden,p.unsaved,p.converted,p.convert_stars,p.prepaid_upgrade_stars,p.prepaid_upgrade_hash,p.gift_num,
 p.lifecycle_status,p.transfer_stars,p.can_export_at,p.can_transfer_at,p.can_resell_at,p.drop_original_details_stars,p.can_craft_at,
 p.message,p.message_entities::text,COALESCE(p.unique_gift_id,0),p.upgrade_msg_id,p.pinned_order,
+EXISTS (SELECT 1 FROM star_gift_collectible_reservations reservation WHERE reservation.saved_gift_id=p.id),
 COALESCE((SELECT array_agg(i.collection_id ORDER BY c.sort_order,i.collection_id) FROM star_gift_collection_items i
 JOIN star_gift_collections c ON c.collection_id=i.collection_id WHERE i.saved_gift_id=p.id),ARRAY[]::integer[])
 FROM peer_star_gifts p WHERE p.owner_peer_type=$1 AND p.owner_peer_id=$2 AND p.prepaid_upgrade_hash=$3 FOR UPDATE`,
@@ -288,6 +290,7 @@ func savedStarGiftByID(ctx context.Context, db interface {
 p.msg_id,p.saved_id,p.gift_date,p.name_hidden,p.unsaved,p.converted,p.convert_stars,p.prepaid_upgrade_stars,p.prepaid_upgrade_hash,p.gift_num,
 p.lifecycle_status,p.transfer_stars,p.can_export_at,p.can_transfer_at,p.can_resell_at,p.drop_original_details_stars,p.can_craft_at,
 p.message,p.message_entities::text,COALESCE(p.unique_gift_id,0),p.upgrade_msg_id,p.pinned_order,
+EXISTS (SELECT 1 FROM star_gift_collectible_reservations reservation WHERE reservation.saved_gift_id=p.id),
 COALESCE((SELECT array_agg(i.collection_id ORDER BY c.sort_order,i.collection_id) FROM star_gift_collection_items i
 JOIN star_gift_collections c ON c.collection_id=i.collection_id WHERE i.saved_gift_id=p.id),ARRAY[]::integer[])
 FROM peer_star_gifts p WHERE p.id=$1`, savedID)

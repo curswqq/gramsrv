@@ -18,7 +18,7 @@ import {
 import { useEffect, useState, type ReactNode } from "react";
 import { api, APIError, errorMessage } from "../api";
 import { ActionButton } from "../components/ActionButton";
-import { BotPicker } from "../components/EntityPicker";
+import { BotPicker, ChannelPicker, UserPicker } from "../components/EntityPicker";
 import { Alert, Badge, EmptyRow, Metric, PageFrame, QueryPanel, SectionHead } from "../components/ui";
 import { useI18n } from "../i18n";
 import { displayUsername, formatDate } from "../lib/format";
@@ -29,9 +29,11 @@ import {
 } from "../permissions";
 import type { Navigate } from "../routing";
 import type {
+  AccountRow,
   BotRow,
   BotVerificationPeerType,
   BotVerifierRow,
+  ChannelRow,
   CustomVerificationRequestRow,
   CustomVerificationRequestStatus,
   CustomVerificationRow,
@@ -764,6 +766,11 @@ function MarksBlock({
   const [cursor, setCursor] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [grantVerifier, setGrantVerifier] = useState("");
+  const [grantPeerType, setGrantPeerType] = useState<BotVerificationPeerType>("user");
+  const [grantUser, setGrantUser] = useState<AccountRow | null>(null);
+  const [grantChannel, setGrantChannel] = useState<ChannelRow | null>(null);
+  const [grantTemplate, setGrantTemplate] = useState("major");
 
   async function load(next = false) {
     setBusy(true);
@@ -792,6 +799,53 @@ function MarksBlock({
 
   return (
     <>
+      {canManage && (
+        <section className="section-block">
+          <SectionHead title={t("botverification.quickGrantTitle")} text={t("botverification.quickGrantHint")} />
+          <div className="compact-form-grid">
+            <label className="field-inline">
+              <span>{t("botverification.verifier")}</span>
+              <VerifierOptions value={grantVerifier} verifiers={verifiers} onChange={setGrantVerifier} />
+            </label>
+            <label className="field-inline">
+              <span>{t("botverification.peerType")}</span>
+              <select value={grantPeerType} onChange={(event) => setGrantPeerType(event.target.value as BotVerificationPeerType)}>
+                <option value="user">{t("botverification.peer.user")}</option>
+                <option value="channel">{t("botverification.peer.channel")}</option>
+              </select>
+            </label>
+            <label className="field-inline">
+              <span>{t("botverification.template")}</span>
+              <select value={grantTemplate} onChange={(event) => setGrantTemplate(event.target.value)}>
+                <option value="major">{t("botverification.templateMajor")}</option>
+                <option value="hold">{t("botverification.templateHold")}</option>
+                <option value="representative">{t("botverification.templateRepresentative")}</option>
+              </select>
+            </label>
+          </div>
+          {grantPeerType === "user" ? (
+            <UserPicker variant="dropdown" label={t("botverification.target")} value={grantUser} onChange={setGrantUser} />
+          ) : (
+            <ChannelPicker label={t("botverification.target")} value={grantChannel} onChange={setGrantChannel} />
+          )}
+          <div className="toolbar">
+            <ActionButton
+              label={t("botverification.quickGrant")}
+              icon={<BadgeCheck size={14} />}
+              tone="neutral"
+              path="/api/actions/grant-custom-verification"
+              disabled={!grantVerifier || !(grantPeerType === "user" ? grantUser : grantChannel)}
+              payload={() => ({
+                verifier_bot_id: grantVerifier,
+                peer_type: grantPeerType,
+                peer_id: grantPeerType === "user" ? grantUser?.ID : grantChannel?.ID,
+                description: t(`botverification.templateDescription.${grantTemplate}`)
+              })}
+              onDone={() => load(false)}
+            />
+          </div>
+        </section>
+      )}
       <section className="section-block">
         <SectionHead
           title={t("botverification.marksTitle")}

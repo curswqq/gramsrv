@@ -684,7 +684,7 @@ func settleSuggestedPostPaymentTx(ctx context.Context, tx pgx.Tx, actorID, payer
 	if price == nil {
 		return nil
 	}
-	credit := price.Amount * paidMessageChannelCommissionPermille / 1000
+	credit := price.Amount * paidMessageReceiverCommissionPermille / 1000
 	if credit <= 0 {
 		return nil
 	}

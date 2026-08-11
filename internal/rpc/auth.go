@@ -872,6 +872,10 @@ func (r *Router) onAuthSignUp(ctx context.Context, req *tg.AuthSignUpRequest) (t
 	}
 	r.bindSessionUser(ctx, u.ID)
 	r.enqueueLoginMessageBootstrap(ctx, loginMessage)
+	// Materialize the level-1 rating before the freshly registered account can
+	// open its profile. This is best-effort and post-commit: rating storage must
+	// never turn a successful signup into an auth failure.
+	r.refreshAccountRatings(ctx, u.ID)
 	return &tg.AuthAuthorization{User: r.tgSelfUserWithUsernames(ctx, u)}, nil
 }
 

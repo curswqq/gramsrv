@@ -1,0 +1,1493 @@
+NEXGRAM / GRAMSRV — ПОЛНАЯ ИНСТРУКЦИЯ ВЛАДЕЛЬЦА СЕРВЕРА
+Версия инструкции: 2026-08-10
+
+Эта инструкция описывает фактическую конфигурацию сервера на момент проверки.
+Сервер: 193.58.121.240
+Hostname: NexGram.play2go.cloud
+ОС: Ubuntu Server 24.04.4 LTS x86-64
+Часовой пояс сервера: UTC
+
+ВАЖНО О БЕЗОПАСНОСТИ
+======================
+
+1. В этом файле специально НЕТ паролей, токенов, приватных SSH/RSA-ключей,
+   PostgreSQL DSN и других секретов.
+2. Никому не отправляйте содержимое файлов:
+   /etc/gramsrv/gramsrv.env
+   /etc/telesrv-grammy-bot.env
+   /opt/gramsrv/compose/.env
+   /var/lib/gramsrv/data/server_rsa.pem
+   /root/.ssh/authorized_keys
+3. Не публикуйте приватный SSH-ключ. Файл с окончанием .pub является публичным,
+   а файл без .pub — приватным.
+4. Не редактируйте бинарники в /opt/gramsrv/bin вручную.
+5. Перед изменением конфигурации всегда создавайте резервную копию файла.
+6. Перед восстановлением базы обязательно создайте ещё один текущий dump.
+
+
+1. ДОСТУП К СЕРВЕРУ
+===================
+
+Параметры подключения:
+
+IP:       193.58.121.240
+Порт:     22
+Пользователь: root
+Протокол: SSH / SFTP
+
+Авторизация по паролю отключена. Разрешены только SSH-ключи.
+Текущие параметры sshd:
+
+Port 22
+PermitRootLogin without-password
+PubkeyAuthentication yes
+PasswordAuthentication no
+MaxAuthTries 3
+
+Проверяемый fingerprint сервера ED25519:
+
+SHA256:qhHRzIwyejeIXK2T5bU+pK2JfBBjRrAoj3Sdd0KRDj8
+
+При первом подключении терминал или WinSCP покажет fingerprint. Он должен
+совпасть с указанным выше. Если не совпал — подключение отменить.
+
+
+1.1. Подключение из PowerShell
+------------------------------
+
+Если приватный ключ находится здесь:
+
+C:\Users\ИМЯ_ПОЛЬЗОВАТЕЛЯ\.ssh\nexgram_owner_ed25519
+
+команда подключения:
+
+ssh -i "$env:USERPROFILE\.ssh\nexgram_owner_ed25519" root@193.58.121.240
+
+Важно: указывать приватный ключ без окончания .pub.
+
+
+1.2. Подключение из Git Bash
+----------------------------
+
+ssh -i ~/.ssh/nexgram_owner_ed25519 root@193.58.121.240
+
+Если ключ имеет другое имя — заменить путь.
+
+
+1.3. Удобный SSH alias
+----------------------
+
+Создать или открыть файл:
+
+C:\Users\ИМЯ_ПОЛЬЗОВАТЕЛЯ\.ssh\config
+
+Добавить:
+
+Host nexgram-host
+    HostName 193.58.121.240
+    User root
+    Port 22
+    IdentityFile C:/Users/ИМЯ_ПОЛЬЗОВАТЕЛЯ/.ssh/nexgram_owner_ed25519
+    IdentitiesOnly yes
+
+После этого подключение выполняется коротко:
+
+ssh nexgram-host
+
+Просмотр журнала главного сервера без интерактивного входа:
+
+ssh nexgram-host "journalctl -u gramsrv -f"
+
+
+1.4. Подключение через WinSCP
+----------------------------
+
+Протокол файла: SFTP
+Имя хоста: 193.58.121.240
+Порт: 22
+Имя пользователя: root
+Пароль: оставить пустым
+
+Далее:
+
+1. Нажать «Дополнительно».
+2. Открыть SSH -> Аутентификация.
+3. Выбрать приватный ключ nexgram_owner_ed25519, не файл .pub.
+4. Сохранить профиль подключения.
+5. При первом входе сверить fingerprint сервера.
+
+Современный WinSCP поддерживает OpenSSH-ключи. Если конкретная версия просит
+PPK, ключ можно конвертировать в PuTTYgen. Исходный приватный ключ при этом
+нужно сохранить в безопасном месте.
+
+
+1.5. Где зарегистрированы разрешённые SSH-ключи
+------------------------------------------------
+
+/root/.ssh/authorized_keys
+
+Права должны быть:
+
+/root/.ssh                  700, root:root
+/root/.ssh/authorized_keys  600, root:root
+
+Добавлять новый публичный ключ следует отдельной строкой. Нельзя удалять
+рабочий ключ до проверки входа с нового ключа в отдельном окне терминала.
+
+
+2. ВНЕШНИЕ АДРЕСА И DNS
+=======================
+
+Панель администратора:
+https://nexgram-admin.mooo.com
+
+Публичный web/update/CDN endpoint:
+https://nexgram-cdn-update.mooo.com
+
+Обе DNS A-записи должны указывать на:
+193.58.121.240
+
+HTTPS обслуживает Caddy. Сертификаты Let's Encrypt выпускаются и обновляются
+автоматически. Не копировать сертификаты вручную и не создавать cron для их
+обновления.
+
+Если IP сервера изменится:
+
+1. Обновить обе A-записи.
+2. Обновить TELESRV_ADVERTISE_IP в /etc/gramsrv/gramsrv.env.
+3. Проверить SFU/TURN advertise IP в этом же файле.
+4. Перезапустить gramsrv.
+5. Пересобрать клиенты, если IP MTProto был встроен непосредственно в клиент.
+
+
+3. ОБЩАЯ АРХИТЕКТУРА
+====================
+
+Внешний клиент Telegram
+    |
+    +-- TCP 2398 --------------------------> gramsrv (MTProto)
+    +-- TCP 2400 --------------------------> gramsrv (RTMP ingest)
+    +-- UDP 12399 -------------------------> gramsrv (SFU/ICE)
+    +-- UDP 12400, 12500-12999 ------------> gramsrv (TURN)
+    +-- HTTPS 443 -> Caddy -> 127.0.0.1:2600 -> gramsrv-admin
+    +-- HTTPS 443 -> Caddy -> 127.0.0.1:2402 -> gramsrv-update
+    +-- HTTPS 443 -> Caddy -> 127.0.0.1:2401 -> public web
+
+gramsrv
+    +-- PostgreSQL 127.0.0.1:5432 (Docker)
+    +-- Redis      127.0.0.1:6399 (Docker)
+    +-- Admin API  127.0.0.1:2399
+    +-- pprof      127.0.0.1:6060
+    +-- OTP webhook 127.0.0.1:2800 -> grammY authentication/store bot
+
+Сервисы на 127.0.0.1 не доступны напрямую из интернета. Это правильно.
+Caddy публикует только разрешённые web-маршруты.
+
+
+4. SYSTEMD-СЕРВИСЫ
+==================
+
+Основные сервисы:
+
+gramsrv.service
+    Главный MTProto-сервер.
+    Бинарник: /opt/gramsrv/bin/gramsrv
+    Рабочая директория: /var/lib/gramsrv
+    Конфигурация: /etc/gramsrv/gramsrv.env
+    Пользователь: gramsrv
+
+gramsrv-admin.service
+    Web-панель администратора.
+    Бинарник: /opt/gramsrv/bin/gramsrv-admin
+    Слушает: 127.0.0.1:2600
+    Публикуется Caddy по nexgram-admin.mooo.com.
+
+gramsrv-update.service
+    Сервер обновлений/CDN.
+    Бинарник: /opt/gramsrv/bin/gramsrv-update
+    Слушает: 127.0.0.1:2402
+    Каталог: /var/lib/gramsrv/data/updates
+
+nexgram-storage.service
+    Запускает PostgreSQL и Redis через Docker Compose.
+    Compose: /opt/gramsrv/compose/compose.yaml
+    Secrets: /opt/gramsrv/compose/.env
+
+telesrv-grammy-bot.service
+    Telegram-бот авторизации, покупок, бонусов, рефералов и поддержки.
+    Runtime: Node.js 22 + grammY.
+    Код: /opt/telesrv-grammy-bot/src
+    Точка входа: /opt/telesrv-grammy-bot/src/index.js
+    Конфигурация: /etc/telesrv-grammy-bot.env
+    База: /var/lib/telesrv-grammy-bot/bot.sqlite3
+    Пользователь: telesrv-bot
+
+caddy.service
+    HTTPS и reverse proxy.
+    Конфигурация: /etc/caddy/Caddyfile
+
+nexgram-backup.timer
+    Ежедневно запускает nexgram-backup.service.
+    Время: 03:30 UTC плюс случайная задержка до 15 минут.
+
+docker.service
+    Контейнеры PostgreSQL и Redis.
+
+fail2ban.service
+    Блокирует перебор SSH.
+
+ssh.service
+    SSH/SFTP-доступ.
+
+
+4.1. Проверить всё одной командой
+----------------------------------
+
+systemctl status gramsrv gramsrv-admin gramsrv-update nexgram-storage telesrv-grammy-bot caddy docker fail2ban --no-pager
+
+Краткий результат без подробностей:
+
+systemctl is-active gramsrv gramsrv-admin gramsrv-update nexgram-storage telesrv-grammy-bot caddy docker fail2ban
+
+Отдельно проверить ежедневный timer:
+
+systemctl is-enabled nexgram-backup.timer
+systemctl list-timers nexgram-backup.timer --all
+
+Для исправной системы должны отображаться active.
+
+
+4.2. Запуск, остановка и перезапуск
+-----------------------------------
+
+Пример для главного сервера:
+
+systemctl start gramsrv
+systemctl stop gramsrv
+systemctl restart gramsrv
+
+После изменения конфигурации приложения:
+
+systemctl restart gramsrv gramsrv-admin gramsrv-update
+
+После изменения бота:
+
+systemctl restart telesrv-grammy-bot
+
+После изменения Caddyfile:
+
+caddy validate --config /etc/caddy/Caddyfile
+systemctl reload caddy
+
+После изменения systemd unit-файла:
+
+systemctl daemon-reload
+systemctl restart ИМЯ_СЕРВИСА
+
+
+4.3. Правильный порядок ручного запуска всей системы
+-----------------------------------------------------
+
+systemctl start docker
+systemctl start nexgram-storage
+systemctl start telesrv-grammy-bot
+systemctl start gramsrv
+systemctl start gramsrv-admin gramsrv-update
+systemctl start caddy
+
+Обычно выполнять это вручную не требуется: зависимости настроены через
+systemd, а сервисы включены в автозапуск.
+
+
+5. ЖУРНАЛЫ И ДИАГНОСТИКА
+========================
+
+Логи хранятся в systemd journal, а не в обычном /var/log/gramsrv.log.
+
+Главный сервер в реальном времени:
+
+journalctl -u gramsrv -f
+
+Последние 200 строк:
+
+journalctl -u gramsrv -n 200 --no-pager
+
+За последний час:
+
+journalctl -u gramsrv --since "1 hour ago" --no-pager
+
+Остальные сервисы:
+
+journalctl -u gramsrv-admin -f
+journalctl -u gramsrv-update -f
+journalctl -u telesrv-grammy-bot -f
+journalctl -u caddy -f
+journalctl -u nexgram-storage -n 100 --no-pager
+journalctl -u nexgram-backup -n 100 --no-pager
+
+Только ошибки текущей загрузки:
+
+journalctl -p err -b --no-pager
+
+Ресурсы:
+
+df -h
+free -h
+uptime
+systemctl --failed
+docker ps
+docker stats --no-stream
+
+Открытые порты:
+
+ss -ltnup
+
+
+6. HEALTH-ПРОВЕРКИ
+==================
+
+Локальные проверки на сервере:
+
+curl -fsS -o /dev/null http://127.0.0.1:2600/
+curl -fsS http://127.0.0.1:2402/healthz
+curl -fsS http://127.0.0.1:2401/healthz
+curl -fsS http://127.0.0.1:2800/healthz
+
+Проверка внешних HTTPS endpoint:
+
+curl -I https://nexgram-admin.mooo.com
+curl -fsS https://nexgram-cdn-update.mooo.com/healthz
+
+Проверка MTProto-порта с Windows PowerShell:
+
+Test-NetConnection 193.58.121.240 -Port 2398
+
+HTTP 401 от POST-запроса без подписи к OTP endpoint является нормальным:
+endpoint принимает только HMAC-подписанные запросы от gramsrv.
+
+
+7. ПОРТЫ И FIREWALL
+===================
+
+Открыты наружу:
+
+22/tcp             SSH/SFTP
+80/tcp             HTTP, редирект/ACME Caddy
+443/tcp+udp        HTTPS/HTTP3 Caddy
+2398/tcp           MTProto
+2400/tcp           RTMP ingest
+12399/udp          SFU/ICE
+12400/udp          TURN/STUN
+12500-12999/udp    TURN relay
+
+Только localhost:
+
+127.0.0.1:5432     PostgreSQL
+127.0.0.1:6399     Redis
+127.0.0.1:2399     Admin API
+127.0.0.1:2401     Public web backend
+127.0.0.1:2402     Update backend
+127.0.0.1:2600     Admin UI backend
+127.0.0.1:2800     OTP bot webhook
+127.0.0.1:6060     Go pprof
+127.0.0.1:2019     Caddy admin API
+
+Проверить firewall:
+
+ufw status verbose
+
+Не открывать наружу PostgreSQL, Redis, Admin API, pprof и OTP webhook.
+
+
+8. ГЛАВНЫЕ КАТАЛОГИ И ФАЙЛЫ
+===========================
+
+/opt/gramsrv/source
+    Git-репозиторий исходного кода сервера.
+    Remote: https://github.com/iamxvbaba/gramsrv.git
+    Рабочая ветка на сервере: main
+
+/opt/gramsrv/bin
+    Рабочие бинарники:
+    gramsrv
+    gramsrv-admin
+    gramsrv-update
+
+/opt/gramsrv/compose
+    Docker Compose для PostgreSQL и Redis.
+    compose.yaml — описание контейнеров.
+    .env — пароли storage, не передавать.
+
+/etc/gramsrv/gramsrv.env
+    Главная конфигурация всех трёх gramsrv-приложений.
+    Права: 640, root:gramsrv.
+
+/var/lib/gramsrv
+    Рабочие данные приложения.
+
+/var/lib/gramsrv/data/server_rsa.pem
+    Приватный RSA-ключ MTProto. Критически важный секрет.
+    Потеря или замена требует пересборки/перенастройки клиентов.
+
+/var/lib/gramsrv/data/server_rsa_public.pem
+    Публичная часть RSA-ключа.
+
+/var/lib/gramsrv/data/blobs
+    Загруженные медиа и blob-хранилище.
+
+/var/lib/gramsrv/data/blob-staging
+    Временные загружаемые blob-файлы.
+
+/var/lib/gramsrv/data/updates/manifest.json
+    Manifest сервера обновлений.
+
+/var/lib/gramsrv/data/updates/files
+    Файлы desktop-обновлений.
+
+/var/lib/gramsrv/seed/official-gifts
+    Начальные официальные подарки.
+
+/var/lib/gramsrv/seed/premium-promo
+    Premium-анимации и промо-ресурсы.
+
+/var/lib/gramsrv/seed/sticker-seed
+    Стикеры, эффекты и связанные ресурсы.
+
+/opt/telesrv-grammy-bot
+    Развёрнутый Node.js/grammY-бот: src, scripts, tests, package.json,
+    package-lock.json и node_modules. Старых Python-версий бота на сервере нет.
+
+/etc/telesrv-grammy-bot.env
+    Token бота, Admin API token, OTP secret и параметры интерфейса.
+    Права: 600, root:root.
+
+/var/lib/telesrv-grammy-bot/bot.sqlite3
+    Транзакционная SQLite-база пользователей, номеров, кодов, бонусов,
+    рефералов, поддержки, продаж, выполнений и возвратов.
+
+/etc/caddy/Caddyfile
+    Домены, TLS, headers и reverse proxy.
+
+/etc/systemd/system
+    Unit-файлы сервисов.
+
+/usr/local/sbin/nexgram-update
+    Безопасное обновление исходников, тестирование, сборка и rollback.
+
+/usr/local/sbin/nexgram-backup
+    Автоматический backup PostgreSQL, конфигурации и grammY-бота.
+
+/usr/local/sbin/gramsrv-reset-data
+    Защищённая полная очистка PostgreSQL gramsrv и выбранной Redis DB.
+
+/usr/local/sbin/gramsrv-reset-bot-data
+    Защищённая полная очистка SQLite-базы grammY-бота.
+
+/var/backups/nexgram
+    Автоматические резервные копии.
+
+Одноразовые старые credentials/bootstrap-файлы в /root удалены и больше не
+используются. Администраторы бота задаются через OWNER_IDS в защищённом env.
+
+
+9. РЕДАКТИРОВАНИЕ КОНФИГУРАЦИИ GRAMSRV
+======================================
+
+Перед изменением:
+
+cp -a /etc/gramsrv/gramsrv.env /etc/gramsrv/gramsrv.env.manual-backup-$(date -u +%Y%m%dT%H%M%SZ)
+
+Открыть:
+
+nano /etc/gramsrv/gramsrv.env
+
+После изменения:
+
+systemctl restart gramsrv gramsrv-admin gramsrv-update
+systemctl is-active gramsrv gramsrv-admin gramsrv-update
+journalctl -u gramsrv -n 100 --no-pager
+
+Основные группы параметров в файле:
+
+TELESRV_LISTEN / ADVERTISE_IP / DC
+    MTProto listener и публичный адрес.
+
+TELESRV_RSA_KEY
+    Путь к приватному RSA-ключу.
+
+TELESRV_PHONE_CODE_* / TELESRV_AUTH_CODE_*
+    Способ доставки, длина, TTL и rate limits кодов входа.
+
+TELESRV_POSTGRES_* / TELESRV_REDIS_*
+    Подключение к PostgreSQL и Redis. Содержат секреты.
+
+TELESRV_ADMIN_*
+    Admin API/UI, пароль, session key и permissions.
+
+TELESRV_PUBLIC_*
+    Публичные web-ссылки, схема приложения и название.
+
+TELESRV_BRAND_*
+    Единая пользовательская идентичность продукта, системного аккаунта,
+    названий авторизаций, Premium и Stars. На production явно задано:
+
+    TELESRV_BRAND_PRODUCT_NAME=NexGram
+    TELESRV_BRAND_PRODUCT_USERNAME=nexgram
+    TELESRV_BRAND_DESKTOP_APP_NAME=NexGram Desktop
+    TELESRV_BRAND_ANDROID_APP_NAME=NexGram Android
+    TELESRV_BRAND_IOS_APP_NAME=NexGram iOS
+    TELESRV_BRAND_MACOS_APP_NAME=NexGram macOS
+    TELESRV_BRAND_WEB_A_APP_NAME=NexGram Web A
+    TELESRV_BRAND_WEB_K_APP_NAME=NexGram Web K
+    TELESRV_BRAND_PREMIUM_NAME=NexGram Premium
+    TELESRV_BRAND_STARS_NAME=NexGram Stars
+
+    Не заменять эти названия непосредственно в исходном коде. Для другого
+    deployment изменять только env и перезапускать gramsrv.
+
+TELESRV_UPDATE_*
+    Update CDN, manifest и files directory.
+
+TELESRV_BLOB_*
+    Blob backend и каталоги медиа.
+
+TELESRV_OFFICIAL_GIFTS_DIR
+TELESRV_STICKER_SEED_DIR
+TELESRV_PREMIUM_PROMO_SEED_DIR
+    Seed-ресурсы.
+
+TELESRV_SFU_* / TELESRV_TURN_* / TELESRV_LIVESTREAM_*
+    Звонки, TURN и трансляции.
+
+TELESRV_OTP_WEBHOOK_*
+    Приватная связь gramsrv с Telegram-ботом.
+
+TELESRV_PREMIUM_GRANT_MONTHS
+    Автоматическая выдача Premium при регистрации. На production установлено 0,
+    то есть новый пользователь не получает Premium автоматически.
+
+Текущие безопасные публичные значения:
+
+TELESRV_PHONE_CODE_DELIVERY_PROVIDER=webhook
+TELESRV_PUBLIC_BASE_URL=https://nexgram-cdn-update.mooo.com
+TELESRV_PUBLIC_APP_SCHEME=nexgram
+TELESRV_PUBLIC_APP_NAME=NexGram
+TELESRV_UPDATE_PUBLIC_URL=https://nexgram-cdn-update.mooo.com
+TELESRV_UPDATE_SERVICE_URL=http://127.0.0.1:2402
+
+Не выводить весь env через публичные логи или скриншоты.
+
+
+10. POSTGRESQL И REDIS
+======================
+
+PostgreSQL и Redis работают не как обычные Ubuntu-сервисы, а в Docker:
+
+nexgram-postgres  postgres:17-alpine
+nexgram-redis     redis:7-alpine
+
+Проверить:
+
+docker ps
+docker inspect --format='{{.State.Health.Status}}' nexgram-postgres
+docker inspect --format='{{.State.Health.Status}}' nexgram-redis
+
+Логи:
+
+docker logs --tail 200 nexgram-postgres
+docker logs --tail 200 nexgram-redis
+
+Вход в psql:
+
+docker exec -it nexgram-postgres psql -U telesrv -d telesrv
+
+Полезные команды внутри psql:
+
+\conninfo
+\dt
+SELECT version();
+\q
+
+Не выполнять DELETE, DROP, TRUNCATE или ручное изменение migration-таблиц без
+актуального backup и отдельного плана восстановления.
+
+Docker volumes:
+
+nexgram_pgdata
+nexgram_redisdata
+
+Физические данные находятся под /var/lib/docker/volumes. Не редактировать их
+вручную и не копировать работающий PostgreSQL volume обычным файловым cp.
+
+
+11. ОБНОВЛЕНИЕ СЕРВЕРА ИЗ ОСНОВНОГО РЕПОЗИТОРИЯ
+================================================
+
+Штатная команда:
+
+/usr/local/sbin/nexgram-update
+
+Перед запуском рекомендуется:
+
+systemctl start nexgram-backup.service
+systemctl is-active gramsrv gramsrv-admin gramsrv-update
+git -C /opt/gramsrv/source status --short --branch
+
+Update-скрипт автоматически:
+
+1. Не допускает параллельный запуск через flock.
+2. Отказывается работать, если в /opt/gramsrv/source есть локальные изменения.
+3. Выполняет git fetch origin main.
+4. Переключается на main.
+5. Делает только fast-forward merge origin/main.
+6. Запускает go test ./...
+7. Собирает gramsrv, gramsrv-admin и gramsrv-update.
+8. Проверяет update manifest.
+9. Сохраняет старые бинарники во временный rollback-каталог.
+10. Устанавливает новые бинарники.
+11. Перезапускает три сервиса.
+12. При ошибке после установки возвращает предыдущие бинарники.
+
+После обновления проверить:
+
+systemctl is-active gramsrv gramsrv-admin gramsrv-update
+journalctl -u gramsrv -n 100 --no-pager
+git -C /opt/gramsrv/source log -1 --oneline
+curl -fsS -o /dev/null http://127.0.0.1:2600/
+curl -fsS http://127.0.0.1:2402/healthz
+
+Важно:
+
+- На сервер загружается только то, что уже вошло в upstream main.
+- Merge PR на GitHub сам по себе не обновляет сервер.
+- После merge нужно вручную запустить /usr/local/sbin/nexgram-update.
+- Скрипт не развёртывает grammY-бота — для него используется отдельная
+  процедура из раздела 13.5.
+- Не делать git reset --hard на production без специального плана.
+
+Если update сообщает local changes:
+
+cd /opt/gramsrv/source
+git status
+git diff
+
+Сначала выяснить происхождение изменений. Не удалять их вслепую.
+
+
+12. ПУБЛИКАЦИЯ ОБНОВЛЕНИЙ КЛИЕНТА
+=================================
+
+Manifest:
+
+/var/lib/gramsrv/data/updates/manifest.json
+
+Файлы desktop:
+
+/var/lib/gramsrv/data/updates/files
+
+Публичный адрес:
+
+https://nexgram-cdn-update.mooo.com
+
+Перед публикацией manifest:
+
+cp -a /var/lib/gramsrv/data/updates/manifest.json /var/lib/gramsrv/data/updates/manifest.json.backup-$(date -u +%Y%m%dT%H%M%SZ)
+
+Общий порядок для Windows Desktop:
+
+1. Собрать Release-клиент с новой версией.
+2. Создать update package официальным Packer из той же tdesktop toolchain.
+3. Получить файл вида tx64updBUILD.
+4. Загрузить его в /var/lib/gramsrv/data/updates/files.
+5. Назначить владельца и права:
+
+   chown gramsrv:gramsrv /var/lib/gramsrv/data/updates/files/tx64updBUILD
+   chmod 640 /var/lib/gramsrv/data/updates/files/tx64updBUILD
+
+6. Получить SHA-256 и размер:
+
+   sha256sum /var/lib/gramsrv/data/updates/files/tx64updBUILD
+   stat -c %s /var/lib/gramsrv/data/updates/files/tx64updBUILD
+
+7. Обновить desktop.win64.stable в manifest.json:
+
+   build     — числовой build клиента;
+   version   — отображаемая версия;
+   file      — точное имя package;
+   sha256    — полученный SHA-256;
+   size      — размер в байтах;
+   disabled  — false для публикации.
+
+8. Проверить manifest:
+
+   /opt/gramsrv/bin/gramsrv-update \
+     --manifest /var/lib/gramsrv/data/updates/manifest.json \
+     --files /var/lib/gramsrv/data/updates/files \
+     --check
+
+9. Перезапустить update service:
+
+   systemctl restart gramsrv-update
+
+10. Проверить:
+
+   curl -fsS http://127.0.0.1:2402/healthz
+   curl -fsS https://nexgram-cdn-update.mooo.com/healthz
+
+Android/iOS в manifest содержат URL магазина или APK и release notes. Пока
+disabled=true, обновление не предлагается.
+
+Клиент увидит обновление только если:
+
+- он собран с поддержкой этого update endpoint;
+- platform/channel совпадают;
+- новый build строго выше установленного;
+- disabled=false;
+- package существует;
+- size и sha256 совпадают;
+- package создан совместимым Packer.
+
+
+13. TELEGRAM GRAMMY BOT
+======================
+
+Production-бот работает через Telegram long polling и доступен как
+@NexGramsBot. Это отдельный Node.js-сервис: отказ бота не должен останавливать
+MTProto-сервер. Установлено:
+
+Node.js: 22.23.2
+grammY:  1.45.1
+
+Файлы и каталоги:
+
+/opt/telesrv-grammy-bot/src/index.js       точка входа
+/opt/telesrv-grammy-bot/src                исходный JavaScript-код
+/opt/telesrv-grammy-bot/test               тесты
+/opt/telesrv-grammy-bot/scripts            служебные миграции
+/opt/telesrv-grammy-bot/package.json       команды и зависимости
+/opt/telesrv-grammy-bot/package-lock.json  зафиксированные версии npm
+/opt/telesrv-grammy-bot/node_modules       установленные зависимости
+/etc/telesrv-grammy-bot.env                production-конфигурация и секреты
+/var/lib/telesrv-grammy-bot/bot.sqlite3    рабочая SQLite-база
+
+Unit:
+
+telesrv-grammy-bot.service
+
+Пользователь процесса:
+
+telesrv-bot:telesrv-bot
+
+Проверка:
+
+systemctl status telesrv-grammy-bot --no-pager
+journalctl -u telesrv-grammy-bot -f
+curl -fsS http://127.0.0.1:2800/healthz
+
+Основные функции:
+
+- /start, /menu, /promo_code и скрытая от обычных пользователей /admin;
+- постоянный случайный номер, первоначальный код и получение реального кода
+  auth.sendCode через подписанный webhook;
+- бесплатная замена номера и покупка анонимных номеров +888;
+- покупка Premium, серверных Stars и коллекционных username за Telegram Stars;
+- произвольные Stars-инвойсы, защита от повторной обработки и журнал продаж;
+- компенсирующие возвраты с отзывом точного выданного товара до возврата XTR;
+- русский и английский интерфейс, команды, кнопки, инвойсы и ошибки;
+- настройка NexGram user ID и последние получатели;
+- бонусы, рефералы, ежедневная рулетка, промокоды и розыгрыши;
+- поддержка и ответы администратора;
+- статистика, рассылки, выдача Stars/Premium/бонусов, продажи и возвраты;
+- обязательная подписка на https://t.me/nexgrams.
+
+
+13.1. Как работает код авторизации
+----------------------------------
+
+1. Пользователь открывает бота и нажимает /start.
+2. Бот создаёт запись пользователя и назначает уникальный номер.
+3. Пользователь вводит этот номер в клиенте NexGram.
+4. Клиент вызывает auth.sendCode.
+5. gramsrv создаёт настоящий код и отправляет HMAC-подписанный webhook на:
+
+   http://127.0.0.1:2800/v1/otp/deliveries
+
+6. Бот проверяет timestamp, HMAC и Idempotency-Key, сохраняет delivery и сразу
+   отвечает gramsrv HTTP 202.
+7. Отправка кода пользователю выполняется асинхронно, поэтому медленный
+   Telegram Bot API не должен превращать auth.sendCode в RPC 500.
+
+Связанные переменные должны совпадать:
+
+/etc/gramsrv/gramsrv.env:
+    TELESRV_PHONE_CODE_DELIVERY_PROVIDER=webhook
+    TELESRV_OTP_WEBHOOK_URL=http://127.0.0.1:2800/v1/otp/deliveries
+    TELESRV_OTP_WEBHOOK_SECRET=<секрет>
+
+/etc/telesrv-grammy-bot.env:
+    CODE_HTTP_HOST=127.0.0.1
+    CODE_HTTP_PORT=2800
+    CODE_WEBHOOK_SECRET=<тот же секрет>
+
+Первоначальный код создаётся вместе с номером, но после auth.sendCode бот
+заменяет его реальным кодом gramsrv. Для входа использовать последний
+доставленный код.
+
+
+13.2. Администраторы бота
+-------------------------
+
+Администраторы задаются списком числовых Telegram user ID в OWNER_IDS:
+
+OWNER_IDS=123456789,987654321
+
+Отдельного bootstrap-файла и команд /admin_add больше нет. После добавления ID:
+
+cp -a /etc/telesrv-grammy-bot.env /etc/telesrv-grammy-bot.env.manual-backup-$(date -u +%Y%m%dT%H%M%SZ)
+nano /etc/telesrv-grammy-bot.env
+systemctl restart telesrv-grammy-bot
+
+Пользователь должен выполнить /start, после чего кнопка администратора и
+команда /admin будут доступны только ID из OWNER_IDS.
+
+
+13.3. Production-настройки бота
+--------------------------------
+
+Перед изменением:
+
+systemctl start nexgram-backup.service
+cp -a /etc/telesrv-grammy-bot.env /etc/telesrv-grammy-bot.env.manual-backup-$(date -u +%Y%m%dT%H%M%SZ)
+
+Открыть:
+
+nano /etc/telesrv-grammy-bot.env
+
+Ключи конфигурации:
+
+BOT_TOKEN                 Telegram Bot API token, секрет.
+OWNER_IDS                 Список Telegram ID администраторов.
+BOT_PUBLIC_USERNAME       Username бота без @; можно получить через getMe.
+PRODUCT_NAME              Пользовательское имя продукта.
+GRAMSRV_API               Внутренний Admin API, сейчас 127.0.0.1:2399.
+GRAMSRV_TOKEN             Admin API token, секрет.
+GRAMSRV_ACTOR             Имя audit-актора бота.
+PUBLIC_BASE_URL           Публичная база ссылок.
+BOT_DB_PATH               Абсолютный путь к SQLite.
+CODE_HTTP_HOST/PORT       Loopback webhook listener.
+CODE_WEBHOOK_SECRET       Общий HMAC secret с gramsrv, секрет.
+REQUIRED_CHANNEL          Канал обязательной подписки.
+REQUIRED_CHANNEL_URL      Ссылка на канал.
+SUPPORT_USERNAME          Username поддержки; пусто отключает прямую ссылку.
+DEFAULT_LANGUAGE          Язык до выбора пользователя: ru или en.
+DEFAULT_NUMBER_COUNTRY    Формат бесплатного номера.
+REFERRAL_BONUS            Бонус пригласившему.
+DAILY_BONUS               Ежедневный бонус.
+NOTIFICATION_TTL_DAYS     Срок активности получателей рассылки.
+
+Безопасные текущие значения:
+
+PRODUCT_NAME=NexGram
+REQUIRED_CHANNEL=@nexgrams
+REQUIRED_CHANNEL_URL=https://t.me/nexgrams
+DEFAULT_LANGUAGE=ru
+DEFAULT_NUMBER_COUNTRY=RU
+REFERRAL_BONUS=25
+DAILY_BONUS=10
+NOTIFICATION_TTL_DAYS=30
+
+После изменения:
+
+systemctl restart telesrv-grammy-bot
+systemctl is-active telesrv-grammy-bot
+curl -fsS http://127.0.0.1:2800/healthz
+journalctl -u telesrv-grammy-bot -n 100 --no-pager
+
+Никогда не вставлять BOT_TOKEN, GRAMSRV_TOKEN или CODE_WEBHOOK_SECRET в
+инструкции, issue, PR, скриншоты и сообщения.
+
+
+13.4. Покупки и возвраты
+------------------------
+
+Каждая успешная покупка сохраняется в durable sales journal вместе со снимком
+точного выполнения: получатель, вид товара, количество, entitlement/username/
+number ID и Telegram payment charge ID.
+
+Корректный возврат выполняется через админ-панель бота:
+
+1. Найти продажу и payment charge ID.
+2. Запустить Refund.
+3. Бот сначала отзывает точное внутреннее выполнение в gramsrv.
+4. Затем вызывает Telegram refundStarPayment.
+5. Повтор того же запроса идемпотентен и не отзывает товар второй раз.
+
+Если Telegram временно недоступен после внутреннего отзыва, нужно повторить
+тот же refund, а не создавать новую операцию. Старые/неполные продажи без
+точного fulfillment metadata блокируются для ручного разбора.
+
+Нельзя возвращать Telegram Stars вручную, оставляя пользователю выданные
+NexGram Stars, Premium, username или номер. Тестовая покупка реальными Stars
+является реальной финансовой операцией.
+
+
+13.5. Проверка и обновление кода бота
+-------------------------------------
+
+Исходник в основном репозитории:
+
+/opt/gramsrv/source/cmd/bots/grammystore
+
+Развёрнутая копия не обновляется скриптом nexgram-update автоматически.
+Production-бот содержит локальные кастомизации, которые намеренно не входят в
+Git-репозиторий:
+
+- заявка на точный +888 номер;
+- ручное назначение цены владельцем;
+- invoice, точная выдача и безопасный отзыв номера при refund;
+- тарифы коллекционных username: 30/50/70 Stars для 10/100/1000 TON.
+
+Canonical recovery-копия кастомных файлов:
+
+/var/lib/telesrv-grammy-bot/customizations/number-quotes-v1
+
+Marker в deployment:
+
+/opt/telesrv-grammy-bot/LOCAL-CUSTOMIZATIONS.txt
+
+Обычный /usr/local/sbin/nexgram-update эти каталоги не затрагивает, поэтому
+обновление gramsrv после approve PR кастомизацию не перезаписывает.
+
+ВАЖНО: больше нельзя выполнять rsync --delete из
+/opt/gramsrv/source/cmd/bots/grammystore прямо в production — это уничтожит
+локальные изменения. Обновление именно бота выполняется только через ручной
+merge upstream-изменений с recovery-копией.
+
+Безопасный порядок обновления бота:
+
+1. Создать проверенный backup:
+
+   systemctl start nexgram-backup.service
+   journalctl -u nexgram-backup.service -n 50 --no-pager
+
+2. Проверить source, marker и сохранить текущую развёрнутую копию:
+
+   git -C /opt/gramsrv/source status --short --branch
+   cat /opt/telesrv-grammy-bot/LOCAL-CUSTOMIZATIONS.txt
+   stamp=$(date -u +%Y%m%dT%H%M%SZ)
+   cp -a /opt/telesrv-grammy-bot /opt/telesrv-grammy-bot.rollback-$stamp
+
+3. Сравнить изменившиеся upstream-файлы с production и recovery-копией:
+
+   diff -u /opt/gramsrv/source/cmd/bots/grammystore/src/bot.js \
+     /opt/telesrv-grammy-bot/src/bot.js
+   diff -u /opt/gramsrv/source/cmd/bots/grammystore/src/catalog.js \
+     /opt/telesrv-grammy-bot/src/catalog.js
+   diff -u /opt/gramsrv/source/cmd/bots/grammystore/src/db.js \
+     /opt/telesrv-grammy-bot/src/db.js
+
+4. В отдельном staging-каталоге вручную совместить upstream и local custom
+   изменения. Не копировать файлы в production до полного npm test.
+
+5. После успешного merge остановить бот, установить candidate и проверить:
+
+   systemctl stop telesrv-grammy-bot
+   cd /opt/telesrv-grammy-bot
+   npm ci --omit=dev
+   npm run check
+   npm test
+
+6. Перезапустить:
+
+   systemctl restart telesrv-grammy-bot
+   systemctl is-active telesrv-grammy-bot
+   curl -fsS http://127.0.0.1:2800/healthz
+   journalctl -u telesrv-grammy-bot -n 100 --no-pager
+
+7. После проверки обновить recovery-копию и SHA256SUMS, затем сделать новый
+   nexgram-backup. Если проверка не прошла, не удалять rollback-копию и не
+   пытаться чинить production вслепую.
+
+
+14. CADDY И HTTPS
+=================
+
+Конфигурация:
+
+/etc/caddy/Caddyfile
+
+Маршруты:
+
+nexgram-admin.mooo.com -> 127.0.0.1:2600
+
+nexgram-cdn-update.mooo.com:
+    /healthz, /readyz, /v1/resolve, /files/* и /current..current4
+        -> 127.0.0.1:2402
+    остальные public web paths -> 127.0.0.1:2401
+
+Изменение Caddyfile:
+
+cp -a /etc/caddy/Caddyfile /etc/caddy/Caddyfile.manual-backup-$(date -u +%Y%m%dT%H%M%SZ)
+nano /etc/caddy/Caddyfile
+caddy fmt --overwrite /etc/caddy/Caddyfile
+caddy validate --config /etc/caddy/Caddyfile
+systemctl reload caddy
+journalctl -u caddy -n 100 --no-pager
+
+Если новый домен добавлен в Caddyfile, его DNS уже должен указывать на сервер,
+а порты 80 и 443 должны быть доступны. Caddy сам запросит сертификат.
+
+
+15. РЕЗЕРВНЫЕ КОПИИ
+===================
+
+Автоматический timer:
+
+nexgram-backup.timer
+
+Расписание:
+
+ежедневно 03:30 UTC + случайная задержка 0-15 минут.
+
+Проверить timer:
+
+systemctl status nexgram-backup.timer --no-pager
+systemctl list-timers nexgram-backup.timer --all
+
+Запустить backup вручную:
+
+systemctl start nexgram-backup.service
+journalctl -u nexgram-backup.service -n 100 --no-pager
+
+Результат:
+
+/var/backups/nexgram/postgres-TIMESTAMP.dump
+/var/backups/nexgram/config-TIMESTAMP.tar.gz
+/var/backups/nexgram/telesrv-grammy-bot-TIMESTAMP.tar.gz
+/var/backups/nexgram/checksums-TIMESTAMP.sha256
+
+Срок хранения штатным скриптом: 7 дней.
+
+Проверить checksum конкретного набора:
+
+cd /var/backups/nexgram
+sha256sum -c checksums-TIMESTAMP.sha256
+
+Автоматический config archive содержит:
+
+/etc/gramsrv
+/etc/caddy/Caddyfile
+/opt/gramsrv/compose
+/var/lib/gramsrv/data/server_rsa.pem
+/var/lib/gramsrv/data/updates/manifest.json
+
+Автоматический bot archive содержит:
+
+/etc/telesrv-grammy-bot.env
+/etc/systemd/system/telesrv-grammy-bot.service
+/opt/telesrv-grammy-bot
+/var/lib/telesrv-grammy-bot
+
+Для согласованной SQLite-копии backup-скрипт кратковременно останавливает
+telesrv-grammy-bot и запускает его обратно. Если бот до backup был выключен,
+скрипт оставляет его выключенным.
+
+ВАЖНО: config archive и bot archive содержат секреты и должны храниться только
+зашифрованно и с ограниченным доступом.
+
+
+15.1. Что НЕ входит в автоматический backup
+-------------------------------------------
+
+- /var/lib/gramsrv/data/blobs
+- /var/lib/gramsrv/data/blob-staging
+- /var/lib/gramsrv/data/updates/files
+- /var/lib/gramsrv/seed
+- Docker volume Redis как отдельный физический snapshot
+
+PostgreSQL сохраняется логическим pg_dump, а текущая SQLite-база бота входит в
+bot archive. Большие media/update/seed-данные необходимо отдельно копировать
+во внешнее защищённое хранилище. Redis используется как оперативное состояние
+и при полном reset очищается отдельно.
+
+
+15.2. Внеплановый backup перед работами
+---------------------------------------
+
+Не копировать работающий bot.sqlite3 обычным cp. Для согласованной общей копии:
+
+systemctl start nexgram-backup.service
+journalctl -u nexgram-backup.service -n 100 --no-pager
+
+Затем определить самый свежий checksum и проверить весь набор:
+
+cd /var/backups/nexgram
+latest=$(ls -1 checksums-*.sha256 | sort | tail -n 1)
+sha256sum -c "$latest"
+
+Ожидаются три строки OK: PostgreSQL, config и telesrv-grammy-bot.
+
+
+15.3. Off-site backup
+----------------------
+
+Копия только на том же VPS не защищает от удаления VPS или отказа диска.
+Не реже одного раза в день/неделю нужно забирать свежие архивы в отдельное
+зашифрованное хранилище.
+
+Через WinSCP можно скачать /var/backups/nexgram. После скачивания проверить
+SHA-256. Не хранить незашифрованные backups в общих облачных папках.
+
+
+16. ВОССТАНОВЛЕНИЕ
+==================
+
+Восстановление PostgreSQL является потенциально разрушительной операцией.
+Проводить только при подтверждённой необходимости и после дополнительного
+текущего dump.
+
+Общий безопасный порядок:
+
+1. Зафиксировать причину восстановления.
+2. Проверить checksum backup.
+3. Создать текущий аварийный pg_dump.
+4. Остановить gramsrv и gramsrv-admin.
+5. Восстановить выбранный PostgreSQL dump в чистую/отдельную базу.
+6. Проверить миграции и целостность.
+7. Запустить gramsrv, проверить журнал.
+8. Запустить admin UI и выполнить функциональную проверку.
+
+Не использовать migrate force и не менять dirty version наугад.
+
+Восстановление конфигурации:
+
+1. Распаковать archive во временный каталог, не сразу в /.
+2. Сравнить файлы через diff.
+3. Восстановить только нужный файл.
+4. Проверить владельца и права.
+5. Перезапустить соответствующий сервис.
+
+Восстановление bot.sqlite3 из автоматического bot archive:
+
+1. Проверить соответствующий checksums-TIMESTAMP.sha256.
+2. Создать ещё один текущий backup.
+3. Распаковать архив во временный каталог и восстановить только базу:
+
+   stamp=НУЖНЫЙ_TIMESTAMP
+   tmp=$(mktemp -d)
+   tar -xzf /var/backups/nexgram/telesrv-grammy-bot-$stamp.tar.gz -C "$tmp"
+   systemctl stop telesrv-grammy-bot
+   cp -a /var/lib/telesrv-grammy-bot/bot.sqlite3 \
+     /var/lib/telesrv-grammy-bot/bot.sqlite3.before-restore
+   install -o telesrv-bot -g telesrv-bot -m 0644 \
+     "$tmp/var/lib/telesrv-grammy-bot/bot.sqlite3" \
+     /var/lib/telesrv-grammy-bot/bot.sqlite3
+   systemctl start telesrv-grammy-bot
+   curl -fsS http://127.0.0.1:2800/healthz
+   journalctl -u telesrv-grammy-bot -n 100 --no-pager
+
+4. Удалять временный каталог только после проверки пользователей, продаж и
+   возвратов. Архив содержит секреты и должен оставаться с правами 600.
+
+
+16.1. Полная очистка данных gramsrv
+-----------------------------------
+
+Скрипт:
+
+/usr/local/sbin/gramsrv-reset-data
+
+Справка:
+
+sudo gramsrv-reset-data --help
+
+Интерактивный запуск:
+
+sudo gramsrv-reset-data
+
+Точная фраза подтверждения:
+
+ERASE_GRAMSRV_PRODUCTION_DATA
+
+Скрипт сначала обязан создать новый backup и проверить его SHA-256. Затем он
+останавливает только ранее активные gramsrv/admin/update/bot-сервисы, полностью
+пересоздаёт PostgreSQL database telesrv, выполняет FLUSHDB только для Redis DB,
+заданной TELESRV_REDIS_DB, и запускает миграции на чистой базе.
+
+Удаляются аккаунты, чаты, подарки, транзакции, сессии и всё другое состояние
+gramsrv в PostgreSQL/Redis.
+
+Сохраняются:
+
+- RSA-ключи сервера;
+- blobs/media и staging-файлы;
+- seed-ресурсы;
+- файлы update CDN;
+- SQLite-база grammY-бота.
+
+Этот скрипт не используется для обычного обновления бинарников или миграций.
+
+
+16.2. Полная очистка базы grammY-бота
+-------------------------------------
+
+Скрипт:
+
+/usr/local/sbin/gramsrv-reset-bot-data
+
+Справка:
+
+sudo gramsrv-reset-bot-data --help
+
+Интерактивный запуск:
+
+sudo gramsrv-reset-bot-data
+
+Точная фраза подтверждения:
+
+ERASE_TELESRV_BOT_DATABASE
+
+Скрипт создаёт и проверяет новый общий backup, проверяет, что BOT_DB_PATH
+находится непосредственно в /var/lib/telesrv-grammy-bot, останавливает бота,
+удаляет bot.sqlite3 вместе с -wal/-shm, запускает бота и ждёт пересоздания базы
+и успешного /healthz.
+
+Удаляются пользователи бота, номера и коды, бонусы, рефералы, support tickets,
+campaigns, sales и refund journals.
+
+Критически важно: скрипт НЕ возвращает Telegram Stars и НЕ отзывает уже
+выданные в gramsrv Stars, Premium, username или номера. Если в базе были
+реальные покупки, сначала нужен отдельный финансовый план сверки и возврата.
+
+Для полностью чистого релиза обе базы очищаются двумя отдельными скриптами,
+каждый со своей фразой подтверждения. Не удалять базы вручную.
+
+
+17. ТИПОВЫЕ ПРОБЛЕМЫ
+====================
+
+17.1. Клиент не подключается
+----------------------------
+
+Проверить:
+
+systemctl is-active gramsrv
+ss -ltnp | grep ':2398'
+ufw status
+journalctl -u gramsrv -n 200 --no-pager
+
+С Windows:
+
+Test-NetConnection 193.58.121.240 -Port 2398
+
+Также проверить совпадение DC, IP, порта и RSA public key в клиенте.
+
+
+17.2. Не приходит код в Telegram-бот
+------------------------------------
+
+Проверить:
+
+systemctl is-active gramsrv telesrv-grammy-bot
+curl -fsS http://127.0.0.1:2800/healthz
+journalctl -u telesrv-grammy-bot -n 200 --no-pager
+journalctl -u gramsrv -n 200 --no-pager
+
+Убедиться, что:
+
+- пользователь сначала отправил боту /start;
+- в клиент введён именно назначенный ботом номер;
+- TELESRV_PHONE_CODE_DELIVERY_PROVIDER=webhook;
+- OTP secret в двух env совпадает;
+- webhook URL указывает на 127.0.0.1:2800.
+
+Не печатать сам код или OTP secret в журналах/тикетах.
+
+
+17.3. Админка или CDN отвечает 502
+----------------------------------
+
+Проверить backend и Caddy:
+
+systemctl is-active gramsrv-admin gramsrv-update gramsrv caddy
+curl -v http://127.0.0.1:2600/
+curl -v http://127.0.0.1:2402/healthz
+caddy validate --config /etc/caddy/Caddyfile
+journalctl -u caddy -n 200 --no-pager
+
+
+17.4. PostgreSQL/Redis недоступны
+---------------------------------
+
+docker ps
+docker compose -f /opt/gramsrv/compose/compose.yaml --env-file /opt/gramsrv/compose/.env ps
+docker logs --tail 200 nexgram-postgres
+docker logs --tail 200 nexgram-redis
+systemctl status nexgram-storage --no-pager
+
+Не удалять Docker volumes для «быстрого исправления» — это удалит данные.
+
+
+17.5. Ошибка Dirty database version
+------------------------------------
+
+1. Не выполнять force сразу.
+2. Остановить перезапуски приложения.
+3. Создать PostgreSQL dump.
+4. Найти номер миграции и SQL этой миграции в исходниках.
+5. Проверить, какие операции реально успели выполниться.
+6. Только затем принять решение: завершить миграцию, откатить её или выставить
+   версию вручную.
+
+
+17.6. Обновление клиента не показывается
+----------------------------------------
+
+Проверить:
+
+- build нового клиента выше текущего;
+- disabled=false;
+- правильные platform и channel;
+- имя package совпадает;
+- sha256 и size совпадают;
+- manifest проходит --check;
+- endpoint /healthz доступен;
+- клиент собран с правильным update URL.
+
+
+17.7. SSH Permission denied (publickey)
+---------------------------------------
+
+Частая ошибка — передача файла .pub вместо приватного ключа.
+
+Правильно:
+
+ssh -i ~/.ssh/nexgram_owner_ed25519 root@193.58.121.240
+
+Неправильно:
+
+ssh -i ~/.ssh/nexgram_owner_ed25519.pub root@193.58.121.240
+
+В Git Bash Windows-пути лучше указывать как ~/.ssh/... или /c/Users/...
+
+
+17.8. Диск заполняется
+----------------------
+
+df -h
+du -xh /var/lib/gramsrv --max-depth=2 | sort -h | tail
+du -xh /var/backups/nexgram --max-depth=1 | sort -h
+journalctl --disk-usage
+
+Не удалять blobs, PostgreSQL volumes или backups, пока не выяснено их назначение.
+
+
+18. БЕЗОПАСНОЕ ДОБАВЛЕНИЕ НОВОГО АДМИНИСТРАТОРА SSH
+===================================================
+
+Новый администратор на своём ПК выполняет:
+
+ssh-keygen -t ed25519 -a 100 -C "nexgram-owner" -f ~/.ssh/nexgram_owner_ed25519
+
+Он передаёт только одну строку из nexgram_owner_ed25519.pub.
+
+На сервере публичный ключ добавляется новой строкой в:
+
+/root/.ssh/authorized_keys
+
+После этого:
+
+chmod 700 /root/.ssh
+chmod 600 /root/.ssh/authorized_keys
+chown -R root:root /root/.ssh
+
+Сначала проверить новый вход в отдельном окне. Только после успешной проверки
+можно удалить старый ключ.
+
+
+19. РЕГУЛЯРНЫЙ ЧЕК-ЛИСТ ВЛАДЕЛЬЦА
+=================================
+
+Ежедневно или при жалобах:
+
+[ ] systemctl --failed
+[ ] systemctl is-active gramsrv gramsrv-admin gramsrv-update telesrv-grammy-bot
+[ ] docker ps — оба контейнера healthy
+[ ] curl health endpoints
+[ ] df -h — достаточно свободного места
+[ ] journalctl -p err --since today
+
+Раз в неделю:
+
+[ ] Проверить nexgram-backup.timer
+[ ] Проверить sha256 последнего backup
+[ ] Скопировать backup вне VPS
+[ ] Убедиться, что свежий bot archive входит в проверенный backup-набор
+[ ] Проверить срок действия/работу HTTPS
+[ ] Проверить fail2ban-client status sshd
+[ ] Проверить доступность MTProto извне
+
+Перед каждым обновлением:
+
+[ ] Создать backup
+[ ] Проверить git status production source
+[ ] Прочитать изменения/миграции
+[ ] Запустить /usr/local/sbin/nexgram-update
+[ ] Проверить сервисы и health
+[ ] Проверить вход клиента, сообщения, медиа, Stars/Premium и подарки
+
+
+20. ТЕКУЩЕЕ СОСТОЯНИЕ НА МОМЕНТ СОЗДАНИЯ ИНСТРУКЦИИ
+====================================================
+
+gramsrv.service:          active
+gramsrv-admin.service:    active
+gramsrv-update.service:   active
+nexgram-storage.service:  active
+telesrv-grammy-bot.service: active
+caddy.service:            active
+docker.service:           active
+fail2ban.service:         active
+
+PostgreSQL container: healthy
+Redis container:      healthy
+
+Текущий production commit бинарника и /opt/gramsrv/source:
+f086021d9f0c35a19a41b783ae2da34bc131ccda
+
+Текущая schema version по журналу:
+173, dirty=false
+
+Диск:
+148 GB всего, около 8% использовано на момент проверки.
+
+Оперативная память:
+7.8 GiB, swap 512 MiB.
+
+Health-проверки admin/update/public/bot возвращали успешный ответ.
+
+Production source чистый, ветка main отслеживает origin/main. PR №37 уже
+включён в production commit. Номер открытого PR намеренно не фиксируется в этой
+инструкции: перед обновлением всегда проверять фактический upstream main.
+
+В active /etc/gramsrv/gramsrv.env уже добавлен полный блок TELESRV_BRAND_* со
+значениями NexGram. Резервная копия до изменения:
+
+/etc/gramsrv/gramsrv.env.pre-brand-20260809T233736Z
+
+Автоматический backup уже включает grammY-бота. Установлены защищённые команды:
+
+/usr/local/sbin/gramsrv-reset-data
+/usr/local/sbin/gramsrv-reset-bot-data
+
+
+КОНЕЦ ИНСТРУКЦИИ
+=================
+
+Если владелец не уверен в потенциально разрушительной команде, сначала нужно:
+
+1. Ничего не удалять.
+2. Снять status и journal.
+3. Создать backup.
+4. Сохранить точный текст ошибки.
+5. Только после этого выполнять исправление.

@@ -480,6 +480,7 @@ objects, verified size/SHA-256, and updated `file_blobs.backend`.
 | `TELESRV_UPLOAD_INFLIGHT_MAX_BYTES` | int64 bytes / `4194304000` | Per-user unassembled upload-byte cap; `<=0` means unlimited. |
 | `TELESRV_UPLOAD_INFLIGHT_MAX_PARTS` | int / `8000` | Per-user unassembled upload-part row cap; `<=0` means unlimited. |
 | `TELESRV_UPLOAD_INFLIGHT_MAX_FILES` | int / `64` | Per-user concurrent unassembled `file_id` cap; `<=0` means unlimited. |
+| `TELESRV_UPLOAD_MAX_FILE_BYTES` | int64 bytes / `0` | Maximum assembled size of one client-uploaded file; `<=0` means unlimited. |
 
 ## 7. AI compose and business automation
 

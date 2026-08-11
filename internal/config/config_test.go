@@ -1007,9 +1007,9 @@ func TestLoadAccountRatingDefaults(t *testing.T) {
 	if !cfg.RatingEnabled {
 		t.Fatal("RatingEnabled = false, want the feature on by default")
 	}
-	if cfg.RatingPendingDelay != 24*time.Hour || cfg.RatingRecomputeInterval != 15*time.Minute ||
+	if cfg.RatingPendingDelay != 0 || cfg.RatingRecomputeInterval != 15*time.Minute ||
 		cfg.RatingRecomputeBatch != 500 || cfg.RatingStaleAfter != 6*time.Hour {
-		t.Fatalf("rating worker defaults = %v/%v/%d/%v, want 24h/15m/500/6h",
+		t.Fatalf("rating worker defaults = %v/%v/%d/%v, want immediate/15m/500/6h",
 			cfg.RatingPendingDelay, cfg.RatingRecomputeInterval, cfg.RatingRecomputeBatch, cfg.RatingStaleAfter)
 	}
 	if got, want := cfg.AccountRatingWeights(), domain.DefaultAccountRatingWeights(); got != want {

@@ -427,6 +427,46 @@ func TestGrantStarsDryRunExecuteAndIdempotency(t *testing.T) {
 	}
 }
 
+func TestLookupAccountSupportsUsernameFormattedPhoneAndNumericPhoneFallback(t *testing.T) {
+	ctx := context.Background()
+	user := domain.User{ID: 1780243200, Phone: "15551234567", Username: "alice", FirstName: "Alice", PremiumUntil: 2_000_000_000}
+	users := &fakeUsersService{users: map[int64]domain.User{user.ID: user}}
+	stars := &fakeStarsService{balances: map[int64]domain.StarsBalance{user.ID: {UserID: user.ID, Balance: 55}}}
+	ratings := newFakeAccountRating()
+	ratings.ratings[user.ID] = domain.AccountRating{UserID: user.ID, Stars: 125, Level: 1}
+	svc := NewService(Dependencies{Users: users, Stars: stars, Rating: ratings, Now: fixedNow})
+
+	for _, query := range []string{"@alice", "+1 (555) 123-4567", "15551234567", "1780243200"} {
+		got, found, err := svc.LookupAccount(ctx, query)
+		if err != nil || !found || got.ID != user.ID || got.StarsBalance != 55 || got.RatingStars != 125 || got.RatingLevel != 1 {
+			t.Fatalf("LookupAccount(%q) = %+v found=%v err=%v", query, got, found, err)
+		}
+	}
+	if _, found, err := svc.LookupAccount(ctx, "@missing"); err != nil || found {
+		t.Fatalf("missing lookup found=%v err=%v", found, err)
+	}
+}
+
+func TestGrantStarsAllNotifiesEveryCommittedRecipientAndReplaysOnce(t *testing.T) {
+	ctx := context.Background()
+	bulk := &fakeBulkStarsService{
+		fakeStarsService: &fakeStarsService{}, applied: true, count: 2,
+		balancesOut: []domain.StarsBalance{{UserID: 1001, Balance: 25}, {UserID: 1002, Balance: 30}},
+	}
+	notifier := &fakeStarsNotifier{}
+	svc := NewService(Dependencies{Commands: newMemoryCommandRepo(), Stars: bulk, StarsNotifier: notifier, Now: fixedNow})
+	req := GrantStarsAllRequest{CommandMeta: CommandMeta{CommandID: "bulk-stars", Actor: "owner", Reason: "release"}, Amount: 25}
+
+	result, err := svc.GrantStarsAll(ctx, req)
+	if err != nil || bulk.calls != 1 || len(notifier.balances) != 2 || result.Details["recipient_count"] != 2 || result.Details["applied"] != true {
+		t.Fatalf("GrantStarsAll result=%+v calls=%d notifications=%+v err=%v", result, bulk.calls, notifier.balances, err)
+	}
+	replay, err := svc.GrantStarsAll(ctx, req)
+	if err != nil || !replay.AlreadyExecuted || bulk.calls != 1 || len(notifier.balances) != 2 {
+		t.Fatalf("GrantStarsAll replay=%+v calls=%d notifications=%+v err=%v", replay, bulk.calls, notifier.balances, err)
+	}
+}
+
 func TestDebitStarsDryRunExecuteAndIdempotency(t *testing.T) {
 	ctx := context.Background()
 	users := &fakeUsersService{users: map[int64]domain.User{1001: {ID: 1001, Username: "alice"}}}
@@ -828,6 +868,26 @@ func (f *fakeUsersService) AdminUser(_ context.Context, userID int64) (domain.Us
 	return u, ok, nil
 }
 
+func (f *fakeUsersService) AdminUserByPhone(_ context.Context, phone string) (domain.User, bool, error) {
+	phone = domain.NormalizePhone(phone)
+	for _, user := range f.users {
+		if domain.NormalizePhone(user.Phone) == phone {
+			return user, true, nil
+		}
+	}
+	return domain.User{}, false, nil
+}
+
+func (f *fakeUsersService) AdminUserByUsername(_ context.Context, username string) (domain.User, bool, error) {
+	username = strings.TrimPrefix(strings.TrimSpace(username), "@")
+	for _, user := range f.users {
+		if strings.EqualFold(user.Username, username) {
+			return user, true, nil
+		}
+	}
+	return domain.User{}, false, nil
+}
+
 func (f *fakeUsersService) GrantPremium(_ context.Context, userID int64, months int) (domain.User, error) {
 	f.grantCalls++
 	f.lastMonths = months
@@ -949,6 +1009,22 @@ type fakeStarsService struct {
 	lastDesc    string
 }
 
+type fakeBulkStarsService struct {
+	*fakeStarsService
+	balancesOut []domain.StarsBalance
+	applied     bool
+	count       int
+	calls       int
+}
+
+func (f *fakeBulkStarsService) CreditAllUsers(_ context.Context, amount int64, _ domain.StarsTransactionReason, _, _, _ string) ([]domain.StarsBalance, bool, int, error) {
+	f.calls++
+	if amount <= 0 {
+		return nil, false, 0, domain.ErrStarsInvalidAmount
+	}
+	return append([]domain.StarsBalance(nil), f.balancesOut...), f.applied, f.count, nil
+}
+
 type fakePremiumService struct {
 	user          domain.User
 	entitlementID int64
@@ -1021,6 +1097,13 @@ func (f *fakeStarsService) Debit(_ context.Context, userID, amount int64, reason
 	balance.Balance -= amount
 	f.balances[userID] = balance
 	return balance, nil
+}
+
+func (f *fakeStarsService) GetBalance(_ context.Context, userID int64) (domain.StarsBalance, error) {
+	if balance, ok := f.balances[userID]; ok {
+		return balance, nil
+	}
+	return domain.StarsBalance{UserID: userID}, nil
 }
 
 type fakeStarsNotifier struct {
@@ -1907,7 +1990,7 @@ func TestRevokeCollectibleUsernameChecksExpectedOwner(t *testing.T) {
 	}
 	if _, err := svc.RevokeCollectibleUsername(ctx, RevokeCollectibleUsernameRequest{
 		CommandMeta: CommandMeta{CommandID: "wrong-owner-refund", Actor: "bot", Reason: "refund"},
-		Username: "durov", ExpectedOwnerUserID: 1002,
+		Username:    "durov", ExpectedOwnerUserID: 1002,
 	}); err == nil || !strings.Contains(err.Error(), CodeCollectibleNotOwned) {
 		t.Fatalf("wrong-owner revoke err=%v, want %s", err, CodeCollectibleNotOwned)
 	}
@@ -1967,7 +2050,7 @@ func TestAdjustAccountRatingDryRunExecuteAndIdempotency(t *testing.T) {
 		t.Fatalf("execute adjust: %v", err)
 	}
 	if rating.adjustCalls != 1 || exec.Details["applied"] != true ||
-		exec.Details["manual_component"] != "-2500" || exec.Details["stars"] != "2500" {
+		exec.Details["manual_component"] != "-2500" || exec.Details["stars"] != "2600" {
 		t.Fatalf("execute adjust result=%+v adjustCalls=%d", exec, rating.adjustCalls)
 	}
 
@@ -2022,12 +2105,12 @@ func TestRecomputeAccountRatingDryRunAndExecute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute recompute: %v", err)
 	}
-	if rating.recomputeCalls != 1 || exec.Details["stars"] != "5000" || exec.Details["version"] != "1" {
+	if rating.recomputeCalls != 1 || exec.Details["stars"] != "5100" || exec.Details["version"] != "1" {
 		t.Fatalf("execute recompute result=%+v recomputeCalls=%d", exec, rating.recomputeCalls)
 	}
 
 	stored, err := svc.AccountRating(ctx, 1001)
-	if err != nil || stored.Stars != 5000 {
+	if err != nil || stored.Stars != 5100 {
 		t.Fatalf("AccountRating = %+v err=%v", stored, err)
 	}
 	if events, err := svc.AccountRatingEvents(ctx, 1001, 10); err != nil || len(events) != 0 {

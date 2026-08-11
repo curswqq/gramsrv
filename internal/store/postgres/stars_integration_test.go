@@ -126,3 +126,53 @@ func TestStarsLedgerPostgres(t *testing.T) {
 		}
 	}
 }
+
+func TestBulkStarsGrantIsAtomicAndIdempotent(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	users := NewUserStore(tx)
+	suffix := randomSuffix(t)
+	first, err := users.Create(ctx, domain.User{AccessHash: 201, Phone: "+1666" + suffix + "01", FirstName: "BulkOne"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := users.Create(ctx, domain.User{AccessHash: 202, Phone: "+1666" + suffix + "02", FirstName: "BulkTwo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bot, err := users.Create(ctx, domain.User{AccessHash: 203, Phone: "+1666" + suffix + "03", FirstName: "BulkBot", Bot: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewStarsStore(tx)
+	balances, applied, count, err := store.CreditAllUsers(ctx, 25, domain.StarsReasonAdjust, 1_700_000_000,
+		"Release grant", "integration", "bulk-"+suffix)
+	if err != nil || !applied || count < 2 {
+		t.Fatalf("bulk grant balances=%+v applied=%v count=%d err=%v", balances, applied, count, err)
+	}
+	for _, userID := range []int64{first.ID, second.ID} {
+		balance, err := store.GetBalance(ctx, userID)
+		if err != nil || balance.Balance != 25 {
+			t.Fatalf("bulk balance for %d = %+v err=%v", userID, balance, err)
+		}
+	}
+	if balance, err := store.GetBalance(ctx, bot.ID); err != nil || balance.Balance != 0 {
+		t.Fatalf("bot received bulk Stars: %+v err=%v", balance, err)
+	}
+
+	balances, applied, replayCount, err := store.CreditAllUsers(ctx, 25, domain.StarsReasonAdjust, 1_700_000_001,
+		"Release grant", "retry", "bulk-"+suffix)
+	if err != nil || applied || len(balances) != 0 || replayCount != count {
+		t.Fatalf("bulk replay balances=%+v applied=%v count=%d err=%v", balances, applied, replayCount, err)
+	}
+	if _, _, _, err := store.CreditAllUsers(ctx, 26, domain.StarsReasonAdjust, 1_700_000_002,
+		"Release grant", "conflict", "bulk-"+suffix); !errors.Is(err, domain.ErrStarsInvalidAmount) {
+		t.Fatalf("changed bulk replay err=%v, want invalid amount", err)
+	}
+}

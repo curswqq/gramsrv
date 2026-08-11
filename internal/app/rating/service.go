@@ -21,9 +21,9 @@ import (
 )
 
 const (
-	// defaultPendingDelay parks a rating increase for a day, matching the
-	// shipped TELESRV_RATING_PENDING_DELAY default.
-	defaultPendingDelay = 24 * time.Hour
+	// Economic operations recompute their affected accounts after commit, so
+	// the shipped policy exposes increases immediately.
+	defaultPendingDelay = 0
 	// defaultStaleAfter is the recompute horizon used when none is configured.
 	defaultStaleAfter = 6 * time.Hour
 	// defaultListLimit / maxListLimit bound one leaderboard page.

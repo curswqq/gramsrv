@@ -1830,7 +1830,10 @@ ORDER BY input.ord ASC, v.date DESC, v.viewer_user_id DESC`, peerTypes, peerIDs,
 	}
 	defer rows.Close()
 	for i := range stories {
-		stories[i].Views = domain.StoryViews{}
+		// Owners must receive an explicit views object even before the first
+		// viewer arrives. Without has_viewers, mobile clients render the story
+		// footer as "Views unavailable" and do not open the viewers sheet.
+		stories[i].Views = domain.StoryViews{HasViewers: stories[i].Owner.IsSelfUser(viewerUserID)}
 		stories[i].SentReaction = nil
 	}
 	for rows.Next() {

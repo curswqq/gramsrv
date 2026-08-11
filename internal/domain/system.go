@@ -58,6 +58,10 @@ const (
 	// retained Premium storefront in this project.
 	GifBotUserID     int64 = 1250000017
 	GifBotAccessHash int64 = 7233282977235616768
+
+	// GetMyIDBotUserID is the stable built-in @getmyid identity helper.
+	GetMyIDBotUserID     int64 = 1250000019
+	GetMyIDBotAccessHash int64 = 6845123098451230912
 )
 
 var configuredPremiumBotUserID atomic.Int64
@@ -88,7 +92,7 @@ func ValidPremiumBotUserID(id int64) bool {
 	}
 	switch id {
 	case OfficialSystemUserID, BotFatherUserID, StickersBotUserID, ChatBotUserID,
-		VerifyBotUserID, VerifierBotUserID, GifBotUserID:
+		VerifyBotUserID, VerifierBotUserID, GifBotUserID, GetMyIDBotUserID:
 		return false
 	}
 	return true
@@ -218,6 +222,19 @@ func GifBotUser() User {
 	}
 }
 
+// GetMyIDBotUser returns the built-in account identity helper.
+func GetMyIDBotUser() User {
+	return User{
+		ID:             GetMyIDBotUserID,
+		AccessHash:     GetMyIDBotAccessHash,
+		FirstName:      "Get My NexGram ID",
+		Username:       "getmyid",
+		Verified:       true,
+		Bot:            true,
+		BotInfoVersion: 1,
+	}
+}
+
 // SystemUserByID 返回内置系统账号；非系统账号返回 ok=false。
 // 所有对 777000 的硬编码注入点统一经此函数，新增内置账号只改这里。
 func SystemUserByID(id int64) (User, bool) {
@@ -239,6 +256,8 @@ func SystemUserByID(id int64) (User, bool) {
 		return VerifierBotUser(), true
 	case GifBotUserID:
 		return GifBotUser(), true
+	case GetMyIDBotUserID:
+		return GetMyIDBotUser(), true
 	}
 	return User{}, false
 }
@@ -263,6 +282,7 @@ func SystemUserIDs() []int64 {
 		VerifierBotUserID,
 		PremiumBotConfiguredUserID(),
 		GifBotUserID,
+		GetMyIDBotUserID,
 	}
 }
 

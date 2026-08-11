@@ -524,12 +524,21 @@ WHERE target_user_id=$1 AND pts=$2 AND event_type='user_emoji_status'`, resaleBu
 	if err != nil {
 		t.Fatalf("upgrade second prepaid gift: %v", err)
 	}
+	// A catalog may project a higher current market floor from older listings.
+	// It must not prevent a new seller from using the platform minimum.
+	if _, err := pool.Exec(ctx, `UPDATE star_gift_catalog SET resell_min_stars=5000 WHERE gift_id=$1`, entry.Gift.ID); err != nil {
+		t.Fatalf("seed projected resale floor: %v", err)
+	}
 	listedForCraft, err := lifecycle.SetStarGiftListing(ctx, domain.StarGiftListingRequest{ActorUserID: owner.ID,
 		Ref:    domain.SavedStarGiftRef{Owner: ownerPeer, MsgID: transferred.Saved.MsgID},
 		Amount: &domain.StarGiftAmount{Currency: domain.StarGiftCurrencyStars, Amount: 125}, Date: now + 146,
 	})
 	if err != nil || listedForCraft.ResellAmount == nil || listedForCraft.ResellAmount.Amount != 125 {
 		t.Fatalf("list craft input = %+v err %v", listedForCraft, err)
+	}
+	var projectedResaleFloor int64
+	if err := pool.QueryRow(ctx, `SELECT resell_min_stars FROM star_gift_catalog WHERE gift_id=$1`, entry.Gift.ID).Scan(&projectedResaleFloor); err != nil || projectedResaleFloor != 125 {
+		t.Fatalf("projected resale floor = %d err %v, want 125", projectedResaleFloor, err)
 	}
 	loserBalanceBeforeOffer, err := stars.GetBalance(ctx, loser.ID)
 	if err != nil {

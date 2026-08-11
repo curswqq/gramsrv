@@ -21,7 +21,7 @@ const maxScheduledMessagePage = 100
 const scheduledRetryBackoffSeconds = 30
 
 func (s *MessageStore) CreateScheduledMessage(ctx context.Context, req domain.ScheduleMessageRequest) (domain.ScheduledMessage, error) {
-	if req.OwnerUserID == 0 || req.Peer.ID == 0 || req.ScheduleDate <= 0 {
+	if req.OwnerUserID == 0 || req.Peer.ID == 0 || req.ScheduleDate <= 0 || req.AllowPaidStars < 0 {
 		return domain.ScheduledMessage{}, fmt.Errorf("create scheduled message: invalid request")
 	}
 	if req.Peer.Type != domain.PeerTypeUser && req.Peer.Type != domain.PeerTypeChannel {
@@ -95,7 +95,7 @@ INSERT INTO scheduled_messages (
   reply_to_msg_id, reply_to_peer_type, reply_to_peer_id, reply_to_top_id,
   quote_text, quote_entities, quote_offset,
   fwd_from_peer_type, fwd_from_peer_id, fwd_from_name, fwd_date,
-  send_as_peer_type, send_as_peer_id,
+	  send_as_peer_type, send_as_peer_id, allow_paid_stars,
   schedule_date, schedule_repeat_period, state, created_at, updated_at
 ) VALUES (
   $1, $2, $3, $4, $5, $6,
@@ -103,14 +103,14 @@ INSERT INTO scheduled_messages (
   $13, $14, $15, $16,
   $17, $18::jsonb, $19,
   $20, $21, $22, $23,
-  $24, $25,
-  $26, $27, 'pending', $28, $28
+	  $24, $25, $26,
+	  $27, $28, 'pending', $29, $29
 )`, req.OwnerUserID, nextID, string(req.Peer.Type), req.Peer.ID, req.RandomID, req.Date,
 		req.Message, entities, media, richMessage, req.Silent, req.NoForwards,
 		meta.ReplyToMsgID, meta.ReplyToPeerType, meta.ReplyToPeerID, meta.ReplyToTopID,
 		meta.QuoteText, meta.QuoteEntitiesJSON, meta.QuoteOffset,
 		meta.FwdFromPeerType, meta.FwdFromPeerID, meta.FwdFromName, meta.FwdDate,
-		sendAsType, sendAsID,
+		sendAsType, sendAsID, req.AllowPaidStars,
 		req.ScheduleDate, req.ScheduleRepeatPeriod, req.Date); err != nil {
 		return domain.ScheduledMessage{}, fmt.Errorf("insert scheduled message: %w", err)
 	}
@@ -489,7 +489,7 @@ body, entities::text, media::text, rich_message::text, silent, noforwards,
 reply_to_msg_id, reply_to_peer_type, reply_to_peer_id, reply_to_top_id,
 quote_text, quote_entities::text, quote_offset,
 fwd_from_peer_type, fwd_from_peer_id, fwd_from_name, fwd_date,
-send_as_peer_type, send_as_peer_id,
+send_as_peer_type, send_as_peer_id, allow_paid_stars,
 schedule_date, schedule_repeat_period, state, sent_message_id, created_at, updated_at`
 }
 
@@ -503,7 +503,7 @@ func scheduledMessageSelectColumnsFor(alias string) string {
 ` + prefix + `reply_to_msg_id, ` + prefix + `reply_to_peer_type, ` + prefix + `reply_to_peer_id, ` + prefix + `reply_to_top_id,
 ` + prefix + `quote_text, ` + prefix + `quote_entities::text, ` + prefix + `quote_offset,
 ` + prefix + `fwd_from_peer_type, ` + prefix + `fwd_from_peer_id, ` + prefix + `fwd_from_name, ` + prefix + `fwd_date,
-` + prefix + `send_as_peer_type, ` + prefix + `send_as_peer_id,
+` + prefix + `send_as_peer_type, ` + prefix + `send_as_peer_id, ` + prefix + `allow_paid_stars,
 ` + prefix + `schedule_date, ` + prefix + `schedule_repeat_period, ` + prefix + `state, ` + prefix + `sent_message_id, ` + prefix + `created_at, ` + prefix + `updated_at`
 }
 
@@ -551,7 +551,7 @@ func scanScheduledMessage(scanner interface{ Scan(...any) error }) (domain.Sched
 		&replyToMsgID, &replyToPeerType, &replyToPeerID, &replyToTopID,
 		&quoteText, &quoteEntitiesJSON, &quoteOffset,
 		&fwdFromPeerType, &fwdFromPeerID, &fwdFromName, &fwdDate,
-		&sendAsPeerType, &sendAsPeerID,
+		&sendAsPeerType, &sendAsPeerID, &msg.AllowPaidStars,
 		&msg.ScheduleDate, &scheduleRepeatPeriod, &msg.State, &msg.SentMessageID, &msg.CreatedAt, &msg.UpdatedAt,
 	); err != nil {
 		return domain.ScheduledMessage{}, fmt.Errorf("scan scheduled message: %w", err)

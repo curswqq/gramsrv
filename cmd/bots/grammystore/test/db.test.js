@@ -98,3 +98,21 @@ test("administrator mutations reject invalid input and missing users", (t) => {
   assert.throws(() => db.createGiveaway("valid", 10, -1));
   assert.throws(() => db.addBonus(999, 10));
 });
+
+test("administrator statistics include bot growth, links and operations", (t) => {
+  const db = fixture(t);
+  db.upsertUser({ id: 1, first_name: "One" }, 1, "ru");
+  db.upsertUser({ id: 2, first_name: "Two" }, 2, "en", 1, 10);
+  db.setServerUserID(1, 1780243200);
+  db.createNumber(1, 1, "free", "RU", false);
+  db.addSupportMessage(2, 2, "help");
+  db.addSale({ product: "stars_1", title: "20 Telesrv Stars", starsPrice: 1, recipientID: 1780243200, buyerID: 1, buyerName: "One", chargeID: "stats-sale" });
+  const stats = db.stats();
+  assert.equal(stats.users, 2);
+  assert.equal(stats.linked, 1);
+  assert.equal(stats.referrals, 1);
+  assert.equal(stats.numbers, 1);
+  assert.equal(stats.sales, 1);
+  assert.equal(stats.sales_stars, 1);
+  assert.equal(stats.support_open, 1);
+});

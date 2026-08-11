@@ -153,6 +153,22 @@ func (s *Service) AdminUser(ctx context.Context, userID int64) (domain.User, boo
 	return s.loadBaseUserByID(ctx, userID)
 }
 
+func (s *Service) AdminUserByPhone(ctx context.Context, phone string) (domain.User, bool, error) {
+	phone = strings.TrimSpace(phone)
+	normalized := domain.NormalizePhone(phone)
+	if s.phones != nil && strings.HasPrefix(normalized, "888") {
+		collectible, err := s.phones.CollectiblePhone(ctx, phone)
+		if err == nil && collectible.Status == domain.CollectibleUsernameStatusOwned && collectible.OwnerUserID > 0 {
+			return s.users.ByID(ctx, collectible.OwnerUserID)
+		}
+	}
+	return s.users.ByPhone(ctx, normalized)
+}
+
+func (s *Service) AdminUserByUsername(ctx context.Context, username string) (domain.User, bool, error) {
+	return s.users.ByUsername(ctx, strings.TrimPrefix(strings.TrimSpace(username), "@"))
+}
+
 // PrivacyBaseUsers returns viewer-independent bot/premium facts through the
 // shared base-user read model. Privacy uses this as a batched cold loader behind
 // its bounded process cache; no viewer projection is performed, avoiding a

@@ -63,13 +63,50 @@ func (s *StarGiftStore) PublishCollectibleRevision(ctx context.Context, write do
 SELECT COALESCE(MAX(revision), 0) + 1 FROM star_gift_collectible_revisions WHERE gift_id=$1`, write.GiftID).Scan(&revision); err != nil {
 			return fmt.Errorf("allocate collectible revision: %w", err)
 		}
+		// Unique gift numbers belong to the catalog gift, not to an individual
+		// collectible revision. Carry the global issuance floor into the new
+		// revision so increasing supply cannot restart numbering at #1.
+		var issued int
+		if err := tx.QueryRow(ctx, `
+SELECT GREATEST(
+    COALESCE((
+        SELECT MAX(unique_gift.num)
+        FROM unique_star_gifts unique_gift
+        WHERE unique_gift.slug LIKE $1 || '-%'
+    ), 0),
+    COALESCE((
+        SELECT MAX(previous.issued)
+        FROM star_gift_collectible_revisions previous
+        WHERE previous.slug_prefix=$1
+    ), 0)
+)`, write.SlugPrefix).Scan(&issued); err != nil {
+			return fmt.Errorf("load collectible issuance floor: %w", err)
+		}
+		if write.SupplyTotal < issued {
+			return domain.ErrStarGiftCollectibleInvalid
+		}
+		// Reservations are rights owned by ordinary gifts that were already
+		// purchased. A replacement release must have room for both the global
+		// serial floor and every such right; publishing a smaller pool would make
+		// an otherwise valid gift impossible to upgrade.
+		var outstandingReservations int
+		if err := tx.QueryRow(ctx, `
+SELECT COUNT(*)::integer
+FROM star_gift_collectible_reservations reservation
+JOIN peer_star_gifts saved ON saved.id=reservation.saved_gift_id
+WHERE saved.gift_id=$1`, write.GiftID).Scan(&outstandingReservations); err != nil {
+			return fmt.Errorf("count collectible upgrade reservations: %w", err)
+		}
+		if write.SupplyTotal-issued < outstandingReservations {
+			return domain.ErrStarGiftCollectibleInvalid
+		}
 		var revisionID int64
 		if err := tx.QueryRow(ctx, `
 INSERT INTO star_gift_collectible_revisions
-    (gift_id, revision, upgrade_stars, supply_total, slug_prefix, status, created_by, command_id,
+    (gift_id, revision, upgrade_stars, supply_total, issued, slug_prefix, status, created_by, command_id,
      official_gift_id, source_manifest_sha256)
-VALUES ($1,$2,$3,$4,$5,'draft',$6,$7,NULLIF($8::bigint,0),$9)
-RETURNING id`, write.GiftID, revision, write.UpgradeStars, write.SupplyTotal, write.SlugPrefix, write.Actor, write.CommandID,
+VALUES ($1,$2,$3,$4,$5,$6,'draft',$7,$8,NULLIF($9::bigint,0),$10)
+RETURNING id`, write.GiftID, revision, write.UpgradeStars, write.SupplyTotal, issued, write.SlugPrefix, write.Actor, write.CommandID,
 			write.OfficialGiftID, nullableSHA256(write.SourceManifestSHA256)).Scan(&revisionID); err != nil {
 			return fmt.Errorf("insert collectible revision: %w", err)
 		}
@@ -137,6 +174,20 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, revisionID, strings.TrimSpace(attribut
 UPDATE star_gift_collectible_revisions SET status='published', published_at=now() WHERE id=$1`, revisionID); err != nil {
 			return fmt.Errorf("publish collectible revision: %w", err)
 		}
+		// Move outstanding entitlements before activating the replacement. The
+		// reservation trigger transfers the counters under the same transaction,
+		// while the locked catalog row prevents purchases from observing a mixed
+		// release. This also guarantees that serial numbers continue globally
+		// instead of being minted concurrently by two revisions.
+		if _, err := tx.Exec(ctx, `
+UPDATE star_gift_collectible_reservations reservation
+SET collectible_revision_id=$2
+FROM peer_star_gifts saved
+WHERE saved.id=reservation.saved_gift_id
+  AND saved.gift_id=$1
+  AND reservation.collectible_revision_id<>$2`, write.GiftID, revisionID); err != nil {
+			return fmt.Errorf("move collectible upgrade reservations: %w", err)
+		}
 		if _, err := tx.Exec(ctx, `
 UPDATE star_gift_catalog SET collectible_revision_id=$2, updated_at=now() WHERE gift_id=$1`, write.GiftID, revisionID); err != nil {
 			return fmt.Errorf("activate collectible revision: %w", err)
@@ -192,7 +243,7 @@ func (s *StarGiftStore) CollectibleAvailability(ctx context.Context, giftIDs []i
 		return out, nil
 	}
 	rows, err := s.db.Query(ctx, `
-SELECT c.gift_id, r.upgrade_stars, r.supply_total, r.issued
+SELECT c.gift_id, r.upgrade_stars, r.supply_total, r.issued + r.reserved
 FROM star_gift_catalog c
 JOIN star_gift_collectible_revisions r ON r.id=c.collectible_revision_id
 WHERE c.gift_id=ANY($1) AND r.status='published'`, giftIDs)
@@ -232,11 +283,11 @@ func readCollectibleRevisionByID(ctx context.Context, db sqlcgen.DBTX, revisionI
 	var status string
 	var publishedAt pgtype.Timestamptz
 	if err := db.QueryRow(ctx, `
-SELECT id, gift_id, revision, upgrade_stars, supply_total, issued, slug_prefix, status,
+SELECT id, gift_id, revision, upgrade_stars, supply_total, issued, reserved, slug_prefix, status,
        created_by, created_at, published_at, COALESCE(official_gift_id,0), source_manifest_sha256
 FROM star_gift_collectible_revisions WHERE id=$1`, revisionID).Scan(
 		&revision.ID, &revision.GiftID, &revision.Revision, &revision.UpgradeStars, &revision.SupplyTotal,
-		&revision.Issued, &revision.SlugPrefix, &status, &revision.CreatedBy, &revision.CreatedAt, &publishedAt,
+		&revision.Issued, &revision.Reserved, &revision.SlugPrefix, &status, &revision.CreatedBy, &revision.CreatedAt, &publishedAt,
 		&revision.OfficialGiftID, &revision.SourceManifestSHA256,
 	); err != nil {
 		return domain.StarGiftCollectibleRevision{}, fmt.Errorf("get collectible revision: %w", err)

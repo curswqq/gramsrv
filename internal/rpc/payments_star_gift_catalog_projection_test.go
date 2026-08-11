@@ -29,10 +29,12 @@ func TestStarGiftCatalogProjectionKeepsSaleDatesBehindSoldOutFlag(t *testing.T) 
 	}
 
 	tests := []struct {
-		name         string
-		gift         domain.StarGift
-		wantSoldOut  bool
-		wantSaleDate bool
+		name                   string
+		gift                   domain.StarGift
+		wantLimited            bool
+		wantRemains, wantTotal int
+		wantSoldOut            bool
+		wantSaleDate           bool
 	}{
 		{name: "unlimited live gift with operational sale history", gift: base},
 		{name: "limited live gift", gift: func() domain.StarGift {
@@ -41,14 +43,28 @@ func TestStarGiftCatalogProjectionKeepsSaleDatesBehindSoldOutFlag(t *testing.T) 
 			gift.AvailabilityRemains = 9
 			gift.AvailabilityTotal = 10
 			return gift
-		}()},
+		}(), wantLimited: true, wantRemains: 9, wantTotal: 10},
 		{name: "sold out gift", gift: func() domain.StarGift {
 			gift := base
 			gift.Limited = true
 			gift.SoldOut = true
 			gift.AvailabilityTotal = 10
 			return gift
-		}(), wantSoldOut: true, wantSaleDate: true},
+		}(), wantLimited: true, wantTotal: 10, wantSoldOut: true, wantSaleDate: true},
+		{name: "collectible inventory", gift: func() domain.StarGift {
+			gift := base
+			gift.UpgradeStars = 25
+			gift.UpgradeIssued = 4
+			gift.UpgradeTotal = 10
+			return gift
+		}(), wantLimited: true, wantRemains: 6, wantTotal: 10},
+		{name: "collectible inventory exhausted", gift: func() domain.StarGift {
+			gift := base
+			gift.UpgradeStars = 25
+			gift.UpgradeIssued = 10
+			gift.UpgradeTotal = 10
+			return gift
+		}(), wantLimited: true, wantTotal: 10, wantSoldOut: true, wantSaleDate: true},
 	}
 
 	for _, test := range tests {
@@ -83,6 +99,13 @@ func TestStarGiftCatalogProjectionKeepsSaleDatesBehindSoldOutFlag(t *testing.T) 
 				}
 				if gift.SoldOut != test.wantSoldOut {
 					t.Fatalf("Layer %d sold_out = %v, want %v", profile, gift.SoldOut, test.wantSoldOut)
+				}
+				if gift.Limited != test.wantLimited {
+					t.Fatalf("Layer %d limited = %v, want %v", profile, gift.Limited, test.wantLimited)
+				}
+				if gift.AvailabilityRemains != test.wantRemains || gift.AvailabilityTotal != test.wantTotal {
+					t.Fatalf("Layer %d availability = %d/%d, want %d/%d", profile,
+						gift.AvailabilityRemains, gift.AvailabilityTotal, test.wantRemains, test.wantTotal)
 				}
 				first, firstSet := gift.GetFirstSaleDate()
 				last, lastSet := gift.GetLastSaleDate()

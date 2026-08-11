@@ -33,6 +33,20 @@ func devStarsTopupOptions() []tg.StarsTopupOption {
 	}
 }
 
+func devStarsPurchaseBlockedErr() error { return tgerr.New(400, "STARS_PURCHASE_BLOCKED") }
+
+func isDevStarsPurchaseInvoice(inv *tg.InputInvoiceStars) bool {
+	if inv == nil {
+		return false
+	}
+	switch inv.Purpose.(type) {
+	case *tg.InputStorePaymentStarsTopup, *tg.InputStorePaymentStarsGift, *tg.InputStorePaymentStarsGiveaway:
+		return true
+	default:
+		return false
+	}
+}
+
 func devStarsGiftOptions() []tg.StarsGiftOption {
 	// No store_product is advertised: telesrv has no Google/Apple product and
 	// sideloaded Android clients must use the invoice checkout path.
@@ -93,6 +107,9 @@ func validDevStarsPaymentCredentials(credentials tg.InputPaymentCredentialsClass
 }
 
 func (r *Router) onPaymentsGetStarsGiveawayOptions(ctx context.Context) ([]tg.StarsGiveawayOption, error) {
+	if r.cfg.DevStarsPurchaseBlocked {
+		return []tg.StarsGiveawayOption{}, nil
+	}
 	if _, _, err := r.currentUserID(ctx); err != nil {
 		return nil, internalErr()
 	}
@@ -156,6 +173,9 @@ type starsGiveawayInfoService interface {
 func userGiftUnavailableErr() error { return tgerr.New(400, "USER_GIFT_UNAVAILABLE") }
 
 func (r *Router) onPaymentsGetStarsGiftOptions(ctx context.Context, req *tg.PaymentsGetStarsGiftOptionsRequest) ([]tg.StarsGiftOption, error) {
+	if r.cfg.DevStarsPurchaseBlocked {
+		return []tg.StarsGiftOption{}, nil
+	}
 	userID, _, err := r.currentUserID(ctx)
 	if err != nil {
 		return nil, internalErr()
@@ -385,6 +405,9 @@ func (r *Router) onPaymentsGetPaymentForm(ctx context.Context, req *tg.PaymentsG
 			}
 		}
 	}
+	if inv, ok := req.Invoice.(*tg.InputInvoiceStars); ok && r.cfg.DevStarsPurchaseBlocked && isDevStarsPurchaseInvoice(inv) {
+		return nil, devStarsPurchaseBlockedErr()
+	}
 
 	if inv, ok := req.Invoice.(*tg.InputInvoiceStars); ok {
 		if purpose, gift := starsGiftPurpose(inv); gift {
@@ -438,6 +461,9 @@ func (r *Router) onPaymentsGetPaymentForm(ctx context.Context, req *tg.PaymentsG
 	gift, err := r.starGiftFromCatalog(ctx, inv.GiftID)
 	if err != nil {
 		return nil, err
+	}
+	if gift.CollectibleSupplyLimited() && !gift.CollectibleUpgradeAvailable() {
+		return nil, starGiftInvalidErr()
 	}
 	if gift.RequirePremium && !r.viewerPremium(ctx, userID) {
 		return nil, tgerr400("PREMIUM_ACCOUNT_REQUIRED")
@@ -631,6 +657,9 @@ func (r *Router) onPaymentsSendStarsForm(ctx context.Context, req *tg.PaymentsSe
 	if err != nil {
 		return nil, err
 	}
+	if gift.CollectibleSupplyLimited() && !gift.CollectibleUpgradeAvailable() {
+		return nil, starGiftInvalidErr()
+	}
 	buyerPremium := r.viewerPremium(ctx, userID)
 	if gift.RequirePremium && !buyerPremium {
 		return nil, tgerr400("PREMIUM_ACCOUNT_REQUIRED")
@@ -690,6 +719,11 @@ func (r *Router) onPaymentsSendStarsForm(ctx context.Context, req *tg.PaymentsSe
 	updates := r.starGiftSendUpdates(ctx, userID, result.Send)
 	appendStarGiftBalanceUpdate(updates, domain.StarGiftCurrencyStars, result.Balance.Balance)
 	r.invalidateStarGiftOwner(peer)
+	if peer.Type == domain.PeerTypeUser {
+		r.refreshAccountRatings(ctx, userID, peer.ID)
+	} else {
+		r.refreshAccountRatings(ctx, userID)
+	}
 	return &tg.PaymentsPaymentResult{Updates: updates}, nil
 }
 
@@ -704,6 +738,9 @@ func (r *Router) onPaymentsSendPaymentForm(ctx context.Context, req *tg.Payments
 	userID, _, err := r.currentUserID(ctx)
 	if err != nil {
 		return nil, internalErr()
+	}
+	if inv, ok := req.Invoice.(*tg.InputInvoiceStars); ok && r.cfg.DevStarsPurchaseBlocked && isDevStarsPurchaseInvoice(inv) {
+		return nil, devStarsPurchaseBlockedErr()
 	}
 	if !validDevStarsPaymentCredentials(req.Credentials, req.FormID) {
 		return nil, tgerr.New(400, "PAYMENT_CREDENTIALS_INVALID")
@@ -938,7 +975,7 @@ func (r *Router) sendStarGiftToUser(ctx context.Context, senderID, recipientID i
 		return domain.SavedStarGiftRef{}, nil, err
 	}
 	prepaidUpgradeHash := ""
-	if prepaidUpgradeStars == 0 && gift.UpgradeStars > 0 && gift.UpgradeIssued < gift.UpgradeTotal {
+	if prepaidUpgradeStars == 0 && gift.CollectibleUpgradeAvailable() {
 		var token [32]byte
 		if _, err := rand.Read(token[:]); err != nil {
 			return domain.SavedStarGiftRef{}, nil, err
@@ -993,7 +1030,7 @@ func (r *Router) sendStarGiftToChannel(ctx context.Context, senderID, channelID 
 			FromUserID:        senderID,
 			NameHidden:        hideName,
 			Saved:             true,
-			CanUpgrade:        gift.UpgradeStars > 0,
+			CanUpgrade:        gift.CollectibleUpgradeAvailable(),
 			PrepaidUpgrade:    prepaidUpgradeStars > 0,
 			UpgradePriceStars: gift.UpgradeStars,
 			UpgradeStars:      prepaidUpgradeStars,
@@ -1056,7 +1093,7 @@ func (r *Router) deliverStarGift(ctx context.Context, senderID, recipientID int6
 				PeerUserID:         recipientID,
 				NameHidden:         hideName,
 				Saved:              true,
-				CanUpgrade:         gift.UpgradeStars > 0,
+				CanUpgrade:         gift.CollectibleUpgradeAvailable(),
 				PrepaidUpgrade:     prepaidUpgradeStars > 0,
 				PrepaidUpgradeHash: prepaidUpgradeHash,
 				UpgradePriceStars:  gift.UpgradeStars,
@@ -1267,6 +1304,7 @@ func (r *Router) onPaymentsConvertStarGift(ctx context.Context, ref tg.InputSave
 			}
 		}
 		r.invalidateStarGiftOwnerProjection(dref.Owner)
+		r.refreshAccountRatings(ctx, userID)
 		return true, nil
 	}
 	result, err := r.deps.Gifts.ConvertAggregate(ctx, domain.StarGiftConvertRequest{
@@ -1291,6 +1329,9 @@ func (r *Router) onPaymentsConvertStarGift(ctx context.Context, ref tg.InputSave
 	}
 	// 转换移除一份展示礼物 → 失效 owner full 投影。
 	r.invalidateStarGiftOwnerProjection(result.Saved.Owner)
+	if result.Saved.Owner.Type == domain.PeerTypeUser {
+		r.refreshAccountRatings(ctx, result.Saved.Owner.ID)
+	}
 	return true, nil
 }
 
@@ -1501,15 +1542,17 @@ func tgStarGifts(catalog []domain.StarGift) []tg.StarGiftClass {
 
 // tgStarGift 把目录项投影为 tg.StarGift（Sticker 须为带 sticker 属性的有效 Document）。
 func tgStarGift(g domain.StarGift) *tg.StarGift {
+	limited, availabilityRemains, availabilityTotal := g.EffectivePurchaseAvailability()
+	soldOut := g.SoldOut || limited && availabilityRemains == 0
 	gift := &tg.StarGift{
-		Limited: g.Limited, SoldOut: g.SoldOut, Birthday: g.Birthday,
+		Limited: limited, SoldOut: soldOut, Birthday: g.Birthday,
 		RequirePremium: g.RequirePremium, LimitedPerUser: g.LimitedPerUser,
 		PeerColorAvailable: g.PeerColorAvailable, Auction: g.Auction,
 		ID: g.ID, Sticker: tgDocument(g.Sticker), Stars: g.Stars, ConvertStars: g.ConvertStars,
 	}
-	if g.Limited {
-		gift.SetAvailabilityRemains(g.AvailabilityRemains)
-		gift.SetAvailabilityTotal(g.AvailabilityTotal)
+	if limited {
+		gift.SetAvailabilityRemains(availabilityRemains)
+		gift.SetAvailabilityTotal(availabilityTotal)
 	}
 	if g.AvailabilityResale > 0 {
 		gift.SetAvailabilityResale(g.AvailabilityResale)
@@ -1517,7 +1560,7 @@ func tgStarGift(g domain.StarGift) *tg.StarGift {
 	// sold_out, first_sale_date and last_sale_date share TL flags.1. The store
 	// retains sale timestamps for live gifts as operational facts, but exposing
 	// either timestamp would make every client decode the gift as sold out.
-	if g.SoldOut {
+	if soldOut {
 		gift.SetFirstSaleDate(g.FirstSaleDate)
 		gift.SetLastSaleDate(g.LastSaleDate)
 	}
@@ -1708,7 +1751,7 @@ func tgSavedStarGifts(viewerUserID int64, gifts []domain.SavedStarGift, catalog 
 		}
 		if g.UniqueGiftID == 0 {
 			current, available := availability[g.GiftID]
-			canIssue := available && current.UpgradeStars > 0 && current.Issued < current.SupplyTotal
+			canIssue := g.HasCollectibleReservation || available && current.UpgradeStars > 0 && current.Issued < current.SupplyTotal
 			if canIssue {
 				item.CanUpgrade = true
 			}
@@ -1767,12 +1810,21 @@ func tgSavedStarGiftGift(g domain.SavedStarGift, catalog map[int64]domain.StarGi
 		return tgUniqueStarGift(*g.Unique)
 	}
 	if gift, ok := catalog[g.RevisionID]; ok {
-		if current, ok := availability[g.GiftID]; ok {
+		current, hasCurrentAvailability := availability[g.GiftID]
+		if hasCurrentAvailability {
 			gift.UpgradeStars = current.UpgradeStars
 			gift.UpgradeTotal = current.SupplyTotal
 			gift.UpgradeIssued = current.Issued
 		}
 		out := tgStarGift(gift)
+		// A reservation belongs to this exact saved gift and remains executable
+		// even when issued+reserved has filled the aggregate pool. Keep the paid
+		// upgrade price in the profile projection; otherwise TDesktop treats the
+		// missing price as a free/prepaid upgrade and calls payments.upgradeStarGift,
+		// which correctly rejects a non-prepaid gift as STARGIFT_INVALID.
+		if g.HasCollectibleReservation && hasCurrentAvailability && current.UpgradeStars > 0 {
+			out.SetUpgradeStars(current.UpgradeStars)
+		}
 		out.ConvertStars = g.ConvertStars
 		return out
 	}

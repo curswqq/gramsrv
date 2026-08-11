@@ -154,6 +154,7 @@ func TestStarGiftRowJSONPreservesInt64AsDecimalStrings(t *testing.T) {
 		DocumentID:    maxInt64,
 		AnimationSize: maxInt64,
 		ReceivedCount: maxInt64,
+		UpgradeStars:  maxInt64,
 	})
 	if err != nil {
 		t.Fatalf("marshal star gift row: %v", err)
@@ -162,7 +163,7 @@ func TestStarGiftRowJSONPreservesInt64AsDecimalStrings(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("unmarshal star gift row: %v", err)
 	}
-	for _, field := range []string{"GiftID", "RevisionID", "Stars", "ConvertStars", "DocumentID", "AnimationSize", "ReceivedCount"} {
+	for _, field := range []string{"GiftID", "RevisionID", "Stars", "ConvertStars", "DocumentID", "AnimationSize", "ReceivedCount", "UpgradeStars"} {
 		if got[field] != "9223372036854775807" {
 			t.Fatalf("%s = %#v, want exact decimal string", field, got[field])
 		}

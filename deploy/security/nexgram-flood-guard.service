@@ -1,0 +1,24 @@
+[Unit]
+Description=NexGram TCP flood guard
+Documentation=file:/etc/nexgram/flood-guard.nft
+After=systemd-sysctl.service
+Before=network-online.target gramsrv.service
+
+[Service]
+Type=oneshot
+Environment=NEXGRAM_FLOOD_GUARD_CONFIG=/etc/nexgram/flood-guard.nft
+ExecStart=/usr/local/sbin/nexgram-flood-guard-apply
+ExecReload=/usr/local/sbin/nexgram-flood-guard-apply
+ExecStop=-/usr/sbin/nft delete table inet nexgram_guard
+RemainAfterExit=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_NETLINK AF_UNIX
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target

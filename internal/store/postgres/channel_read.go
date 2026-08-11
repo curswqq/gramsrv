@@ -334,6 +334,12 @@ func (s *ChannelStore) ReadChannelMentions(ctx context.Context, req domain.ReadC
 		return domain.ReadChannelMentionsResult{}, fmt.Errorf("commit read channel mentions: %w", err)
 	}
 	committed = true
+	// Clear the exact dialog projection synchronously. Otherwise a cached
+	// unread_mentions_count may be returned after messages.readMentions and the
+	// client's "View mentions" affordance remains stuck until reconnect.
+	if s.dialogCache != nil {
+		s.dialogCache.delete(req.UserID, req.ChannelID)
+	}
 	offset := 0
 	if remaining > 0 {
 		offset = 1

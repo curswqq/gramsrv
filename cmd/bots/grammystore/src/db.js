@@ -141,7 +141,20 @@ INSERT OR IGNORE INTO settings(key,value) VALUES('stars_rate','20');
     const threshold = now() - Math.max(1, ttlDays) * 86400;
     return this.db.prepare("SELECT * FROM users WHERE notifications=1 AND updated_at>=? ORDER BY created_at").all(threshold);
   }
-  stats() { return { users: this.db.prepare("SELECT count(*) n FROM users").get().n, numbers: this.db.prepare("SELECT count(*) n FROM numbers").get().n, sales: this.db.prepare("SELECT count(*) n FROM sales").get().n }; }
+  stats() {
+    return this.db.prepare(`
+SELECT
+  (SELECT count(*) FROM users) AS users,
+  (SELECT count(*) FROM users WHERE created_at >= CAST(strftime('%s','now','start of day') AS INTEGER)) AS users_today,
+  (SELECT count(*) FROM users WHERE server_user_id > 0) AS linked,
+  (SELECT count(*) FROM users WHERE notifications = 1) AS notifications,
+  (SELECT COALESCE(sum(referral_count), 0) FROM users) AS referrals,
+  (SELECT count(*) FROM numbers WHERE is_current = 1) AS numbers,
+  (SELECT count(*) FROM sales) AS sales,
+  (SELECT COALESCE(sum(stars_price), 0) FROM sales) AS sales_stars,
+  (SELECT count(*) FROM support_messages WHERE status = 'open') AS support_open
+`).get();
+  }
   setLanguage(id, language) { this.db.prepare("UPDATE users SET language=?,updated_at=? WHERE telegram_id=?").run(language, now(), id); }
   toggleNotifications(id) { this.db.prepare("UPDATE users SET notifications=1-notifications,updated_at=? WHERE telegram_id=?").run(now(), id); return Boolean(this.user(id)?.notifications); }
   setServerUserID(id, serverUserID) { this.db.prepare("UPDATE users SET server_user_id=?,updated_at=? WHERE telegram_id=?").run(serverUserID, now(), id); }

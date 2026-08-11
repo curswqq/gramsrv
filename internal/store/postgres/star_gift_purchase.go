@@ -137,7 +137,7 @@ func (s *StarGiftLifecycleStore) PurchaseStarGift(ctx context.Context, req domai
 					Stars: gift.Stars, ConvertStars: saved.ConvertStars, Title: gift.Title, Sticker: &sticker,
 					Message: req.Message, MessageEntities: append([]domain.MessageEntity(nil), req.MessageEntities...),
 					FromUserID: req.BuyerUserID, PeerUserID: req.To.ID, To: req.To, NameHidden: req.HideName, Saved: true,
-					CanUpgrade: gift.UpgradeStars > 0, PrepaidUpgrade: saved.PrepaidUpgradeStars > 0,
+					CanUpgrade: gift.CollectibleUpgradeAvailable(), PrepaidUpgrade: saved.PrepaidUpgradeStars > 0,
 					PrepaidUpgradeHash: saved.PrepaidUpgradeHash, UpgradePriceStars: gift.UpgradeStars,
 					UpgradeStars: saved.PrepaidUpgradeStars}}}
 			result.Gift, result.Saved, result.Balance = gift, saved, balance
@@ -155,6 +155,11 @@ func (s *StarGiftLifecycleStore) PurchaseStarGift(ctx context.Context, req domai
 				return err
 			}
 			result.Saved.ID = id
+			// StarGiftStore.Create owns collectible reservation creation for every
+			// active ordinary gift. Do not insert the same saved_gift_id again here:
+			// the reservation table is keyed by saved_gift_id and the duplicate used
+			// to roll the entire Stars checkout back with INTERNAL_SERVER_ERROR.
+			result.Saved.HasCollectibleReservation = result.Saved.CollectibleReservationRevisionID > 0
 			return s.insertStarGiftPurchaseCommand(ctx, tx, req, result.Saved.ID, result.Gift.Stars+result.Saved.PrepaidUpgradeStars, result.Balance.Balance)
 		},
 	}
@@ -190,12 +195,15 @@ func (s *StarGiftLifecycleStore) purchaseStarGiftToChannel(ctx context.Context, 
 			return err
 		}
 		saved.ID, saved.SavedID = id, id
+		// StarGiftStore.Create atomically created the matching collectible
+		// reservation in this transaction.
+		saved.HasCollectibleReservation = saved.CollectibleReservationRevisionID > 0
 		sticker := gift.Sticker
 		action := domain.ChannelMessageAction{Type: domain.ChannelActionStarGift, StarGift: &domain.MessageStarGiftAction{
 			GiftID: gift.ID, Stars: gift.Stars, ConvertStars: saved.ConvertStars, Title: gift.Title,
 			Sticker: &sticker, Message: saved.Message, MessageEntities: append([]domain.MessageEntity(nil), saved.MessageEntities...),
 			FromUserID: req.BuyerUserID, PeerChannelID: req.To.ID,
-			SavedID: id, NameHidden: saved.NameHidden, Saved: true, CanUpgrade: gift.UpgradeStars > 0,
+			SavedID: id, NameHidden: saved.NameHidden, Saved: true, CanUpgrade: gift.CollectibleUpgradeAvailable(),
 			PrepaidUpgrade: saved.PrepaidUpgradeStars > 0, PrepaidUpgradeHash: saved.PrepaidUpgradeHash,
 			UpgradePriceStars: gift.UpgradeStars, UpgradeStars: saved.PrepaidUpgradeStars,
 		}}
@@ -247,15 +255,35 @@ func (s *StarGiftLifecycleStore) prepareStarGiftPurchase(ctx context.Context, tx
 	gift.AvailabilityRemains = remains
 	upgradePrice := int64(0)
 	prepayHash := ""
+	collectibleReservationRevisionID := int64(0)
 	if gift.UpgradeStars > 0 || req.IncludeUpgrade {
 		revision, err := lockActiveCollectibleRevision(ctx, tx, gift.ID)
-		if err != nil || revision.Issued >= revision.SupplyTotal {
+		if err == nil {
+			// CatalogRevision was read before the collectible row lock. Refresh
+			// the mutable supply counters so the service message cannot advertise
+			// an upgrade that a concurrent purchase has just exhausted.
+			gift.UpgradeStars = revision.UpgradeStars
+			gift.UpgradeTotal = revision.SupplyTotal
+			gift.UpgradeIssued = revision.Issued + revision.Reserved
+		} else {
+			gift.UpgradeStars = 0
+			gift.UpgradeTotal = 0
+			gift.UpgradeIssued = 0
+		}
+		if err != nil || revision.Issued+revision.Reserved >= revision.SupplyTotal {
 			if req.IncludeUpgrade {
 				return domain.StarGift{}, domain.SavedStarGift{}, domain.StarsBalance{}, domain.ErrStarGiftCollectibleUnavailable
 			}
+			// A gift backed by a finite collectible release must not remain
+			// purchasable after the final serial has been issued. This check is
+			// performed while holding the active revision lock, so a concurrent
+			// final upgrade cannot race a successful checkout.
+			return domain.StarGift{}, domain.SavedStarGift{}, domain.StarsBalance{}, domain.ErrStarGiftUnavailable
 		} else if req.IncludeUpgrade {
+			collectibleReservationRevisionID = revision.ID
 			upgradePrice = revision.UpgradeStars
 		} else {
+			collectibleReservationRevisionID = revision.ID
 			var token [32]byte
 			if _, err := rand.Read(token[:]); err != nil {
 				return domain.StarGift{}, domain.SavedStarGift{}, domain.StarsBalance{}, err
@@ -299,7 +327,8 @@ last_sale_date=$2,updated_at=now() WHERE gift_id=$1`, gift.ID, req.Date); err !=
 	saved := domain.SavedStarGift{Owner: req.To, FromUserID: req.BuyerUserID, GiftID: gift.ID, RevisionID: gift.RevisionID,
 		Date: req.Date, NameHidden: req.HideName, ConvertStars: gift.ConvertStars, PrepaidUpgradeStars: upgradePrice,
 		PrepaidUpgradeHash: prepayHash, Message: req.Message,
-		MessageEntities: append([]domain.MessageEntity(nil), req.MessageEntities...), Unsaved: req.RecipientUnsaved}
+		MessageEntities: append([]domain.MessageEntity(nil), req.MessageEntities...), Unsaved: req.RecipientUnsaved,
+		CollectibleReservationRevisionID: collectibleReservationRevisionID}
 	return gift, saved, balance, nil
 }
 

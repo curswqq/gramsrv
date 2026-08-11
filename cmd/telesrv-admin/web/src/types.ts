@@ -244,6 +244,9 @@ export type StarGiftRow = {
   Height: number;
   FrameRate: number;
   ReceivedCount: string;
+  UpgradeStars: string;
+  UpgradeSupply: number;
+  UpgradeIssued: number;
   CreatedBy: string;
   UpdatedAt: string;
 };

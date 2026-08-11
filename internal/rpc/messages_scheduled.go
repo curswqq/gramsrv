@@ -202,6 +202,7 @@ func (r *Router) scheduleOutgoing(ctx context.Context, userID int64, peer domain
 		NoForwards:           p.noforwards,
 		ReplyTo:              replyTo,
 		SendAs:               sendAs,
+		AllowPaidStars:       p.allowPaidStars,
 		ScheduleDate:         scheduleDate,
 		ScheduleRepeatPeriod: repeatPeriod,
 		Date:                 date,
@@ -232,13 +233,14 @@ func (r *Router) sendClaimedScheduledMessages(ctx context.Context, userID int64,
 	sentIDs := make([]int, 0, len(claimed))
 	for _, scheduled := range claimed {
 		updates, _, err := r.sendOutgoing(ctx, userID, scheduled.Peer, outgoingSend{
-			randomID:    scheduled.RandomID,
-			message:     scheduled.Message,
-			entities:    tgInputMessageEntities(scheduled.Entities),
-			media:       scheduled.Media,
-			richMessage: scheduled.RichMessage,
-			silent:      scheduled.Silent,
-			noforwards:  scheduled.NoForwards,
+			randomID:       scheduled.RandomID,
+			message:        scheduled.Message,
+			entities:       tgInputMessageEntities(scheduled.Entities),
+			media:          scheduled.Media,
+			richMessage:    scheduled.RichMessage,
+			silent:         scheduled.Silent,
+			noforwards:     scheduled.NoForwards,
+			allowPaidStars: scheduled.AllowPaidStars,
 		})
 		if err != nil {
 			if scheduledSvc, ok := r.deps.Messages.(scheduledMessagesService); ok {
@@ -409,6 +411,7 @@ func (r *Router) scheduleForwardMessages(ctx context.Context, userID int64, from
 			ReplyTo:              replyTo,
 			Forward:              forward,
 			SendAs:               sendAs,
+			AllowPaidStars:       req.AllowPaidStars,
 			ScheduleDate:         req.ScheduleDate,
 			ScheduleRepeatPeriod: req.ScheduleRepeatPeriod,
 			Date:                 date,

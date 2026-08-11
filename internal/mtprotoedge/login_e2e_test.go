@@ -64,7 +64,7 @@ func TestLoginRegisterFlow(t *testing.T) {
 	if err := helpStore.UpsertAppConfig(context.Background(), domain.AppConfig{
 		Client: "tdesktop",
 		Hash:   seedAppConfigHash,
-		JSON:   []byte(`{"chat_read_mark_expire_period":604800,"chat_read_mark_size_threshold":50,"pm_read_date_expire_period":604800,"quote_length_max":1024,"telegram_antispam_group_size_min":200,"telegram_antispam_user_id":"5434988373"}`),
+		JSON:   []byte(`{"chat_read_mark_expire_period":604800,"chat_read_mark_size_threshold":50,"pm_read_date_expire_period":604800,"quote_length_max":1024,"telegram_antispam_group_size_min":200,"telegram_antispam_user_id":"5434988373","stars_paid_messages_available":true}`),
 	}); err != nil {
 		t.Fatalf("seed app config: %v", err)
 	}

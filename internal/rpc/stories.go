@@ -3229,7 +3229,9 @@ func (r *Router) tgStoriesStoryViewsForIDs(ctx context.Context, viewerUserID int
 
 func storyViewsForCounterResponse(viewerUserID int64, story domain.Story) domain.StoryViews {
 	views := story.Views
-	if !story.Owner.IsSelfUser(viewerUserID) {
+	if story.Owner.IsSelfUser(viewerUserID) {
+		views.HasViewers = true
+	} else {
 		views.HasViewers = false
 		views.RecentViewers = nil
 	}

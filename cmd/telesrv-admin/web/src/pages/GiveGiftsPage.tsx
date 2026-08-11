@@ -21,7 +21,7 @@ export function GiveGiftsPage() {
     try {
       const rows = (await api.gifts()).Gifts ?? [];
       setGifts(rows);
-      setSelected((current) => current ?? rows[0] ?? null);
+      setSelected((current) => rows.find((row) => row.GiftID === current?.GiftID) ?? rows[0] ?? null);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -54,6 +54,7 @@ export function GiveGiftsPage() {
           <div className="give-gift-picker-list" role="listbox" aria-label={t("giveGifts.pickGift")}>
             {visible.map((gift) => {
               const active = selected?.GiftID === gift.GiftID;
+              const upgradeExhausted = Number(gift.UpgradeStars ?? 0) > 0 && (gift.UpgradeSupply ?? 0) > 0 && gift.UpgradeIssued >= gift.UpgradeSupply;
               return (
                 <button key={gift.GiftID} type="button" role="option" aria-selected={active}
                   className={`give-gift-option ${active ? "selected" : ""} ${gift.Enabled ? "" : "gift-row-disabled"}`}
@@ -64,6 +65,7 @@ export function GiveGiftsPage() {
                     <span className="mono">#{gift.GiftID}</span>
                   </span>
                   <span className="give-gift-option-price">
+                    {upgradeExhausted && <Badge tone="warn">{t("giveGifts.upgradeExhausted")}</Badge>}
                     {gift.Enabled ? <Badge>⭐ {gift.Stars}</Badge> : <Badge tone="neutral">{t("common.disabled")}</Badge>}
                   </span>
                 </button>

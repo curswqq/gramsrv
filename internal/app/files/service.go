@@ -65,6 +65,7 @@ type Service struct {
 	stickerSetCache    *stickerSetFullCache
 	stickerSetNegCache *stickerSetNegativeCache
 	uploadQuota        domain.UploadPartQuota
+	uploadMaxFileBytes int64
 	mapTiles           *mapTileProxy
 	externalMedia      *externalMediaFetcher
 	webpage            *webpageFetcher
@@ -120,6 +121,14 @@ func WithGifCatalog(catalog store.GifCatalogStore) Option {
 func WithUploadPartQuota(quota domain.UploadPartQuota) Option {
 	return func(s *Service) {
 		s.uploadQuota = quota
+	}
+}
+
+// WithUploadMaxFileBytes sets the assembled size limit for one uploaded file.
+// A non-positive value leaves individual file size unrestricted.
+func WithUploadMaxFileBytes(maxBytes int64) Option {
+	return func(s *Service) {
+		s.uploadMaxFileBytes = maxBytes
 	}
 }
 
@@ -650,6 +659,9 @@ func (s *Service) loadAndValidateUploadParts(ctx context.Context, ownerUserID, f
 			return nil, 0, domain.ErrFilePartsInvalid
 		}
 		total += p.Size
+		if s.uploadMaxFileBytes > 0 && total > s.uploadMaxFileBytes {
+			return nil, 0, domain.ErrFileTooBig
+		}
 		if total > DefaultUploadInFlightMaxBytes {
 			return nil, 0, domain.ErrFilePartsInvalid
 		}

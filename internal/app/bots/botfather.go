@@ -95,7 +95,7 @@ func (s *Service) HandlesBot(botUserID int64) bool {
 	}
 	switch botUserID {
 	case domain.BotFatherUserID, domain.StickersBotUserID, domain.ChatBotUserID,
-		domain.VerifyBotUserID, domain.VerifierBotUserID:
+		domain.VerifyBotUserID, domain.VerifierBotUserID, domain.GetMyIDBotUserID:
 		return true
 	default:
 		return false
@@ -124,6 +124,8 @@ func (s *Service) OnPrivateMessage(ctx context.Context, botUserID int64, msg dom
 		go s.respondAsVerify(userID, msg)
 	case domain.VerifierBotUserID:
 		go s.respondAsVerifier(userID, msg)
+	case domain.GetMyIDBotUserID:
+		go s.respondAsGetMyID(userID, session)
 	default:
 		if s.premium != nil && botUserID == s.premium.BotUserID() {
 			go s.respondAsPremium(botUserID, userID, msg, session)

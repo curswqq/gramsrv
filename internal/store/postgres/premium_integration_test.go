@@ -430,6 +430,33 @@ WHERE sender_user_id=$1 AND recipient_user_id=$2`,
 		selfConfirmationCount != 1 {
 		t.Fatalf("self purchase confirmation count=%d err=%v", selfConfirmationCount, err)
 	}
+	activeSelfForm, err := premium.IssuePremiumPaymentForm(ctx, domain.PremiumPaymentForm{
+		IdempotencyKey:  "premium-integration-active-self-form",
+		BuyerUserID:     buyer.ID,
+		Kind:            domain.PremiumPurchaseSelf,
+		RecipientUserID: buyer.ID,
+		Months:          plan.Months,
+		DurationDays:    plan.DurationDays,
+		AmountStars:     plan.AmountStars,
+		PlanVersion:     plan.Version,
+		IssuedAt:        now + 7,
+		ExpiresAt:       now + 7 + domain.PremiumPaymentFormTTLSeconds,
+	})
+	if err != nil {
+		t.Fatalf("issue active self form: %v", err)
+	}
+	_, err = premium.PurchasePremium(ctx, domain.PremiumPurchaseRequest{
+		BuyerUserID: buyer.ID, FormID: activeSelfForm.ID, Kind: domain.PremiumPurchaseSelf,
+		RecipientUserID: buyer.ID, Months: plan.Months, PlanVersion: plan.Version,
+		Date: now + 8, CommandKey: "premium-integration-active-self-purchase",
+	})
+	var activeErr domain.PremiumSubscriptionActiveError
+	if !errors.As(err, &activeErr) || activeErr.Until != selfPurchase.Entitlement.ExpiresAt {
+		t.Fatalf("active self purchase err=%v, want active until %d", err, selfPurchase.Entitlement.ExpiresAt)
+	}
+	if balance, err := stars.GetBalance(ctx, buyer.ID); err != nil || balance.Balance != 2750 {
+		t.Fatalf("balance changed by active self purchase=%+v err=%v", balance, err)
+	}
 
 	grant, grantedUser, err := premium.GrantPremiumEntitlement(ctx, domain.PremiumAdminGrantRequest{
 		UserID: recipient.ID, ActorUserID: 992, Months: 1, DurationDays: 1,

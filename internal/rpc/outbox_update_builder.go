@@ -38,6 +38,9 @@ func (r *Router) BuildOutboxUpdates(ctx context.Context, requests []OutboxUpdate
 			if peers := storyUpdateEventPeers(events[i]); len(peers) > 0 {
 				update = r.withStoryUpdatePeerObjectsForOutbox(ctx, viewerUserID, update, peers...)
 			}
+			if update != nil {
+				r.applyPeerReadModelsForOutbox(ctx, viewerUserID, update.Users, update.Chats)
+			}
 			out[item.index] = update
 		}
 	}

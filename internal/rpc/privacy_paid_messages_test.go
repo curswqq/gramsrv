@@ -95,8 +95,8 @@ func TestPrivateContactRequirementUsesNoPaidMessagesReadModel(t *testing.T) {
 	if err := send(81001, 0); err == nil || !strings.Contains(err.Error(), "ALLOW_PAYMENT_REQUIRED") || !strings.Contains(err.Error(), "(7)") {
 		t.Fatalf("non-exempt send err = %v, want ALLOW_PAYMENT_REQUIRED 7", err)
 	}
-	if err := send(81002, 7); err == nil || !strings.Contains(err.Error(), "PAYMENT_UNSUPPORTED") {
-		t.Fatalf("authorized paid send err = %v, want explicit unsupported ledger", err)
+	if err := send(81002, 7); err != nil {
+		t.Fatalf("authorized paid send: %v", err)
 	}
 
 	if _, err := privacy.SetRules(ctx, bob.ID, domain.PrivacyKeyNoPaidMessages, []domain.PrivacyRule{{

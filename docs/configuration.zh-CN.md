@@ -461,6 +461,7 @@ active key。不要手工编辑 manifest 或 PEM，不要在各实例上分别�
 | `TELESRV_UPLOAD_INFLIGHT_MAX_BYTES` | int64 bytes / `4194304000` | 单用户未组装上传字节上限；`<=0` 表示不限。 |
 | `TELESRV_UPLOAD_INFLIGHT_MAX_PARTS` | int / `8000` | 单用户未组装分片行数上限；`<=0` 表示不限。 |
 | `TELESRV_UPLOAD_INFLIGHT_MAX_FILES` | int / `64` | 单用户并发未组装 `file_id` 上限；`<=0` 表示不限。 |
+| `TELESRV_UPLOAD_MAX_FILE_BYTES` | int64 bytes / `0` | 单个客户端上传文件的组装后大小上限；`<=0` 表示不限。 |
 
 ## 7. AI compose 与 Business automation
 

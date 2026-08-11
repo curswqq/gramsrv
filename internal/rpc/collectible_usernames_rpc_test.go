@@ -30,6 +30,10 @@ type fakeUsernameRegistry struct {
 	collectibles map[string]domain.CollectibleUsername
 	// err, when set, fails every read. Used for the degradation tests.
 	err error
+	// Transient failure counters exercise first-request retry behavior without
+	// changing the permanent-error degradation contract above.
+	peerFailures  int
+	batchFailures int
 	// batchCalls / peerCalls count read fan-out so the tests can assert no N+1.
 	batchCalls int
 	peerCalls  int
@@ -44,6 +48,10 @@ func newFakeUsernameRegistry() *fakeUsernameRegistry {
 
 func (f *fakeUsernameRegistry) PeerUsernames(_ context.Context, peer domain.Peer) ([]domain.Username, error) {
 	f.peerCalls++
+	if f.peerFailures > 0 {
+		f.peerFailures--
+		return nil, errors.New("transient username registry read")
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -52,6 +60,10 @@ func (f *fakeUsernameRegistry) PeerUsernames(_ context.Context, peer domain.Peer
 
 func (f *fakeUsernameRegistry) UsernamesBatch(_ context.Context, peers []domain.Peer) (map[domain.Peer][]domain.Username, error) {
 	f.batchCalls++
+	if f.batchFailures > 0 {
+		f.batchFailures--
+		return nil, errors.New("transient username registry batch read")
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -62,6 +74,21 @@ func (f *fakeUsernameRegistry) UsernamesBatch(_ context.Context, peers []domain.
 		}
 	}
 	return out, nil
+}
+
+func TestUsernameRegistryMapRetriesTransientFirstProfileRead(t *testing.T) {
+	registry := newFakeUsernameRegistry()
+	peer := domain.Peer{Type: domain.PeerTypeUser, ID: 100}
+	registry.byPeer[peer] = []domain.Username{{Username: "collectible", Active: true, CollectibleID: 7}}
+	registry.peerFailures = 1
+	router := &Router{deps: Deps{Usernames: registry}}
+	byPeer := router.usernameRegistryMap(context.Background(), []domain.Peer{peer})
+	if len(byPeer[peer]) != 1 || byPeer[peer][0].Username != "collectible" {
+		t.Fatalf("retried username registry projection = %#v", byPeer)
+	}
+	if registry.peerCalls != 2 {
+		t.Fatalf("peer username reads = %d, want one retry", registry.peerCalls)
+	}
 }
 
 func (f *fakeUsernameRegistry) ToggleUsername(_ context.Context, peer domain.Peer, username string, active bool) (bool, error) {

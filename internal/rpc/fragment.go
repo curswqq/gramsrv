@@ -422,6 +422,13 @@ func (r *Router) usernameRegistryMap(ctx context.Context, peers []domain.Peer) m
 	}
 	if len(peers) == 1 {
 		list, err := r.deps.Usernames.PeerUsernames(ctx, peers[0])
+		if err != nil {
+			// A profile is often opened with a single users.getFullUser call. A
+			// transient registry read used to make collectible usernames absent
+			// until the user reopened the profile. Retry only failures; a genuine
+			// empty registry remains a single query.
+			list, err = r.deps.Usernames.PeerUsernames(ctx, peers[0])
+		}
 		if err != nil || len(list) == 0 {
 			return nil
 		}
@@ -429,7 +436,10 @@ func (r *Router) usernameRegistryMap(ctx context.Context, peers []domain.Peer) m
 	}
 	byPeer, err := r.deps.Usernames.UsernamesBatch(ctx, peers)
 	if err != nil {
-		return nil
+		byPeer, err = r.deps.Usernames.UsernamesBatch(ctx, peers)
+		if err != nil {
+			return nil
+		}
 	}
 	return byPeer
 }

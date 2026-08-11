@@ -14,6 +14,11 @@ import (
 // 持久化在 star_gift_catalog(_revisions)；peer 收到的礼物实例落 peer_star_gifts。
 // 与 Stars 账本配合：发礼 Debit、转换回 Stars 时 Credit。
 
+// StarGiftMinimumResaleStars is the platform floor for listing a collectible
+// in Stars. The catalog ResellMinStars field is a live market projection (the
+// cheapest current listing), so it must not be reused as a seller price floor.
+const StarGiftMinimumResaleStars int64 = 125
+
 // StarGift 是一个可购买礼物目录项。RevisionID 标识不可变的标题/价格/动画快照。
 type StarGift struct {
 	ID            int64
@@ -53,6 +58,68 @@ type StarGift struct {
 	Background          *StarGiftBackground
 }
 
+// CollectibleUpgradeAvailable reports whether the currently published
+// collectible pool can mint another unique gift. UpgradeStars alone is not a
+// capability flag: a published pool may already have exhausted its supply.
+func (g StarGift) CollectibleUpgradeAvailable() bool {
+	return g.UpgradeStars > 0 && g.UpgradeTotal > 0 && g.UpgradeIssued < g.UpgradeTotal
+}
+
+// CollectibleSupplyLimited reports whether purchases ultimately depend on a
+// published collectible pool. A regular gift without such a pool remains
+// governed only by its catalog availability fields.
+func (g StarGift) CollectibleSupplyLimited() bool {
+	return g.UpgradeStars > 0 && g.UpgradeTotal > 0
+}
+
+// CollectibleAvailabilityRemains returns the bounded number of unique serials
+// that can still be minted from the active collectible revision.
+func (g StarGift) CollectibleAvailabilityRemains() int {
+	if !g.CollectibleSupplyLimited() {
+		return 0
+	}
+	remains := g.UpgradeTotal - g.UpgradeIssued
+	if remains < 0 {
+		return 0
+	}
+	if remains > g.UpgradeTotal {
+		return g.UpgradeTotal
+	}
+	return remains
+}
+
+// EffectivePurchaseAvailability returns the tightest inventory constraint
+// visible to official clients. Imported gifts commonly have an unlimited base
+// catalog row but a finite collectible pool; projecting that pool through the
+// standard availability fields makes every client show remaining/sold counts.
+func (g StarGift) EffectivePurchaseAvailability() (limited bool, remains, total int) {
+	if g.Limited {
+		limited = true
+		remains, total = boundedStarGiftAvailability(g.AvailabilityRemains, g.AvailabilityTotal)
+	}
+	if g.CollectibleSupplyLimited() {
+		collectibleRemains := g.CollectibleAvailabilityRemains()
+		if !limited || collectibleRemains < remains {
+			limited = true
+			remains, total = collectibleRemains, g.UpgradeTotal
+		}
+	}
+	return limited, remains, total
+}
+
+func boundedStarGiftAvailability(remains, total int) (int, int) {
+	if total < 0 {
+		total = 0
+	}
+	if remains < 0 {
+		remains = 0
+	}
+	if remains > total {
+		remains = total
+	}
+	return remains, total
+}
+
 // StarGiftBackground is the release-level palette used by auction cards and
 // gift previews before a collectible backdrop is selected.
 type StarGiftBackground struct {
@@ -88,10 +155,18 @@ type SavedStarGift struct {
 	CanResellAt              int
 	DropOriginalDetailsStars int64
 	CanCraftAt               int
-	UpgradeMsgID             int   // 当前 owner 侧承载 messageActionStarGiftUnique 的消息 id；所有权转移时随新消息更新
-	PinnedOrder              int   // >0 表示资料页置顶顺序
-	CollectionIDs            []int // 当前所属集合；按集合顺序稳定返回
-	Unique                   *UniqueStarGift
+	UpgradeMsgID             int // 当前 owner 侧承载 messageActionStarGiftUnique 的消息 id；所有权转移时随新消息更新
+	PinnedOrder              int // >0 表示资料页置顶顺序
+	// HasCollectibleReservation is a durable entitlement to one serial in the
+	// published collectible release. It keeps an already purchased regular
+	// gift upgradeable even when no public inventory remains.
+	HasCollectibleReservation bool
+	// CollectibleReservationRevisionID is set on a freshly prepared purchase
+	// so the transaction can reserve the exact locked release after creating
+	// the saved gift. Reads only need HasCollectibleReservation.
+	CollectibleReservationRevisionID int64
+	CollectionIDs                    []int // 当前所属集合；按集合顺序稳定返回
+	Unique                           *UniqueStarGift
 }
 
 type StarGiftLifecycleStatus string
@@ -170,6 +245,7 @@ type StarGiftCollectibleRevision struct {
 	UpgradeStars         int64
 	SupplyTotal          int
 	Issued               int
+	Reserved             int
 	SlugPrefix           string
 	Published            bool
 	Models               []StarGiftCollectibleAttribute

@@ -327,6 +327,9 @@ func (r *Router) resolvePremiumInvoice(
 			if out.RecipientUserID != 0 {
 				return domain.PremiumInvoice{}, tgerr.New(400, "INVOICE_INVALID")
 			}
+			if err := r.rejectActivePremiumUser(ctx, userID); err != nil {
+				return domain.PremiumInvoice{}, err
+			}
 		case domain.PremiumPurchaseGift:
 			recipient, found, err := r.deps.Users.ByID(ctx, userID, out.RecipientUserID)
 			if err != nil {
@@ -364,6 +367,9 @@ func (r *Router) resolvePremiumInvoice(
 		purpose, ok := invoice.Purpose.(*tg.InputStorePaymentPremiumSubscription)
 		if !ok || purpose == nil || purpose.Restore {
 			return domain.PremiumInvoice{}, tgerr.New(400, "INVOICE_INVALID")
+		}
+		if err := r.rejectActivePremiumUser(ctx, userID); err != nil {
+			return domain.PremiumInvoice{}, err
 		}
 		plans, err := r.deps.Premium.Plans(ctx)
 		if err != nil || len(plans) == 0 {
@@ -419,6 +425,20 @@ func (r *Router) rejectActivePremiumGiftRecipient(recipient domain.User) error {
 		return nil
 	}
 	return tgerr.New(420, fmt.Sprintf("PREMIUM_SUB_ACTIVE_UNTIL_%d", recipient.PremiumUntil))
+}
+
+func (r *Router) rejectActivePremiumUser(ctx context.Context, userID int64) error {
+	if r.deps.Users == nil || userID <= 0 {
+		return internalErr()
+	}
+	user, found, err := r.deps.Users.ByID(ctx, userID, userID)
+	if err != nil {
+		return internalErr()
+	}
+	if !found || user.ID != userID || user.Deleted || user.Bot || domain.IsSystemUserID(user.ID) {
+		return userIDInvalidErr()
+	}
+	return r.rejectActivePremiumGiftRecipient(user)
 }
 
 func premiumInvoiceFromPlan(

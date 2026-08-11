@@ -736,6 +736,84 @@ func TestAdminUniqueStarGiftGrantIsAtomicAndReplayable(t *testing.T) {
 	if issued != 1 || commandCount != 1 {
 		t.Fatalf("replay duplicated aggregate: issued=%d commands=%d", issued, commandCount)
 	}
+
+	// An already purchased ordinary gift owns the remaining serial. Publishing
+	// a replacement pool must move that reservation to the replacement before
+	// any new unique gift can consume the same global number.
+	reservedSaved := createCollectibleSavedGift(t, ctx, NewMessageStore(pool), gifts, entry.Gift, domain.SavedStarGift{
+		Owner: domain.Peer{Type: domain.PeerTypeUser, ID: recipient.ID}, FromUserID: domain.OfficialSystemUserID,
+		GiftID: entry.Gift.ID, RevisionID: entry.Gift.RevisionID, Date: now + 1,
+		ConvertStars: 25, PrepaidUpgradeStars: revision.UpgradeStars,
+	})
+	var initialReservationRevisionID int64
+	if err := pool.QueryRow(ctx, `SELECT collectible_revision_id FROM star_gift_collectible_reservations WHERE saved_gift_id=$1`, reservedSaved.ID).Scan(&initialReservationRevisionID); err != nil || initialReservationRevisionID != revision.ID {
+		t.Fatalf("ordinary gift reservation=%d err=%v, want revision %d", initialReservationRevisionID, err, revision.ID)
+	}
+
+	// A replacement attribute revision increases the same gift's global
+	// supply. It must continue at #2 instead of retrying the already allocated
+	// slug and (gift_id, num) from the first revision.
+	nextRevision, err := gifts.PublishCollectibleRevision(ctx, domain.StarGiftCollectibleWrite{
+		GiftID: entry.Gift.ID, UpgradeStars: 125, SupplyTotal: 3, SlugPrefix: revision.SlugPrefix,
+		Models: []domain.StarGiftCollectibleAttribute{
+			{Kind: domain.StarGiftCollectibleModel, Name: "Next Model One", RarityKind: domain.StarGiftRarityPermille, RarityPermille: 500,
+				Document: collectibleTestDocumentPtr(baseDocumentID+5, "next-model-one.tgs"), Blob: collectibleTestBlobPtr(baseDocumentID+5, "next-model-one"), Animation: collectibleTestAnimationPtr("next-model-one.tgs")},
+			{Kind: domain.StarGiftCollectibleModel, Name: "Next Model Two", RarityKind: domain.StarGiftRarityPermille, RarityPermille: 500,
+				Document: collectibleTestDocumentPtr(baseDocumentID+6, "next-model-two.tgs"), Blob: collectibleTestBlobPtr(baseDocumentID+6, "next-model-two"), Animation: collectibleTestAnimationPtr("next-model-two.tgs")},
+		},
+		Patterns: []domain.StarGiftCollectibleAttribute{
+			{Kind: domain.StarGiftCollectiblePattern, Name: "Next Pattern One", RarityKind: domain.StarGiftRarityPermille, RarityPermille: 500,
+				Document: collectibleTestPatternDocumentPtr(baseDocumentID+7, "next-pattern-one.tgs"), Blob: collectibleTestBlobPtr(baseDocumentID+7, "next-pattern-one"), Animation: collectibleTestAnimationPtr("next-pattern-one.tgs")},
+			{Kind: domain.StarGiftCollectiblePattern, Name: "Next Pattern Two", RarityKind: domain.StarGiftRarityPermille, RarityPermille: 500,
+				Document: collectibleTestPatternDocumentPtr(baseDocumentID+8, "next-pattern-two.tgs"), Blob: collectibleTestBlobPtr(baseDocumentID+8, "next-pattern-two"), Animation: collectibleTestAnimationPtr("next-pattern-two.tgs")},
+		},
+		Backdrops: []domain.StarGiftCollectibleAttribute{
+			{Kind: domain.StarGiftCollectibleBackdrop, Name: "Next Backdrop One", BackdropID: 11, CenterColor: 0x112233, EdgeColor: 0x223344, PatternColor: 0x334455, TextColor: 0xffffff, RarityKind: domain.StarGiftRarityPermille, RarityPermille: 500},
+			{Kind: domain.StarGiftCollectibleBackdrop, Name: "Next Backdrop Two", BackdropID: 12, CenterColor: 0xaabbcc, EdgeColor: 0x778899, PatternColor: 0xddeeff, TextColor: 0x111111, RarityKind: domain.StarGiftRarityPermille, RarityPermille: 500},
+		},
+		Actor: "integration", CommandID: "admin-grant-pool-next-" + suffix,
+	})
+	if err != nil {
+		t.Fatalf("publish replacement collectible pool: %v", err)
+	}
+	if nextRevision.Issued != 1 || nextRevision.Reserved != 1 {
+		t.Fatalf("replacement revision issued=%d reserved=%d, want global floor 1 plus one moved reservation", nextRevision.Issued, nextRevision.Reserved)
+	}
+	var movedRevisionID int64
+	var previousReserved int
+	if err := pool.QueryRow(ctx, `SELECT collectible_revision_id FROM star_gift_collectible_reservations WHERE saved_gift_id=$1`, reservedSaved.ID).Scan(&movedRevisionID); err != nil {
+		t.Fatalf("load moved collectible reservation: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT reserved FROM star_gift_collectible_revisions WHERE id=$1`, revision.ID).Scan(&previousReserved); err != nil {
+		t.Fatalf("load previous revision reservation count: %v", err)
+	}
+	if movedRevisionID != nextRevision.ID || previousReserved != 0 {
+		t.Fatalf("reservation stayed on previous release: revision=%d previous_reserved=%d", movedRevisionID, previousReserved)
+	}
+	secondReq := req
+	secondReq.CommandKey = "admin-success-next-" + suffix
+	secondReq.ModelAttributeID = nextRevision.Models[0].ID
+	secondReq.PatternAttributeID = nextRevision.Patterns[0].ID
+	secondReq.BackdropAttributeID = nextRevision.Backdrops[0].ID
+	second, err := upgrades.GrantUniqueStarGift(ctx, secondReq)
+	if err != nil {
+		t.Fatalf("grant after replacement collectible pool: %v", err)
+	}
+	if second.Unique.Num != 2 || second.Unique.Slug != nextRevision.SlugPrefix+"-2" {
+		t.Fatalf("replacement grant unique=%+v, want global number and slug #2", second.Unique)
+	}
+	reservedUpgrade, err := upgrades.UpgradeStarGift(ctx, domain.StarGiftUpgradeRequest{
+		UserID:         recipient.ID,
+		Ref:            domain.SavedStarGiftRef{Owner: domain.Peer{Type: domain.PeerTypeUser, ID: recipient.ID}, MsgID: reservedSaved.MsgID},
+		RequirePrepaid: true, KeepOriginalDetails: true,
+		CommandKey: "reserved-after-replacement-" + suffix, Date: now + 2,
+	})
+	if err != nil {
+		t.Fatalf("upgrade moved reserved gift: %v", err)
+	}
+	if reservedUpgrade.Unique.Num != 3 || reservedUpgrade.Unique.Slug != nextRevision.SlugPrefix+"-3" {
+		t.Fatalf("moved reservation unique=%+v, want collision-free global number and slug #3", reservedUpgrade.Unique)
+	}
 }
 
 func collectibleTestAnimation(name string) domain.StarGiftAnimation {

@@ -80,7 +80,8 @@ export function mainKeyboard(language, admin = false) {
   const kb = new InlineKeyboard()
     .text(translate(language, "buttonNumbers"), "menu:numbers").text(translate(language, "buttonShop"), "menu:shop").row()
     .text(translate(language, "buttonBonuses"), "menu:bonuses").text(translate(language, "buttonReferrals"), "menu:referrals").row()
-    .text(translate(language, "buttonSupport"), "menu:support").text(translate(language, "buttonSettings"), "menu:settings");
+    .text(translate(language, "buttonSupport"), "menu:support").text(translate(language, "buttonSettings"), "menu:settings").row()
+    .url(translate(language, "buttonGetMyID"), "tg://resolve?domain=getmyid");
   if (admin) kb.row().text(translate(language, "buttonAdmin"), "admin:menu");
   return kb;
 }
@@ -110,7 +111,8 @@ export function settingsKeyboard(language, user) {
 export function adminKeyboard(language) {
   return new InlineKeyboard()
     .text(translate(language, "adminStatsButton"), "admin:stats").text(translate(language, "adminBroadcastButton"), "admin:broadcast").row()
-    .text(translate(language, "adminStarsButton"), "admin:stars").text(translate(language, "adminPremiumButton"), "admin:premium").row()
+    .text(translate(language, "adminStarsButton"), "admin:stars").text(translate(language, "adminStarsAllButton"), "admin:stars_all").row()
+    .text(translate(language, "adminPremiumButton"), "admin:premium").text(translate(language, "adminVerificationButton"), "admin:verification").row()
     .text(translate(language, "adminPromoButton"), "admin:promo").text(translate(language, "adminGiveawayButton"), "admin:giveaway").row()
     .text(translate(language, "adminBonusButton"), "admin:bonus").text(translate(language, "adminInvoiceButton"), "admin:invoice").row()
     .text(translate(language, "adminAccessButton"), "admin:access").text(translate(language, "adminRefundButton"), "admin:refund").row()
@@ -508,7 +510,8 @@ export function createBot({ config, db, gramsrv }) {
     const promptKeys = {
       broadcast: "adminPromptBroadcast", stars: "adminPromptStars", premium: "adminPromptPremium", promo: "adminPromptPromo",
       giveaway: "adminPromptGiveaway", bonus: "adminPromptBonus", invoice: "adminPromptInvoice", access: "adminPromptAccess",
-      refund: "adminPromptRefund", reply: "adminPromptReply", rate: "adminPromptRate",
+      refund: "adminPromptRefund", reply: "adminPromptReply", rate: "adminPromptRate", stars_all: "adminPromptStarsAll",
+      verification: "adminPromptVerification",
     };
     if (promptKeys[action]) {
       db.setPending(ctx.from.id, `admin_${action}`, { operationID: `admin:${ctx.from.id}:${Date.now()}:${randomInt(1_000_000)}` });
@@ -519,9 +522,24 @@ export function createBot({ config, db, gramsrv }) {
   bot.on("message:text", async (ctx) => {
     if (ctx.message.text.startsWith("/")) return;
     const pending = db.pending(ctx.from.id);
-    if (!pending) return;
     const input = ctx.message.text.trim();
     const language = languageOf(ctx.from.id);
+    if (!pending) {
+      if (!/^(?:\+?[\d ()-]{6,}|@?[A-Za-z][A-Za-z0-9_]{4,31})$/.test(input)) return;
+      try {
+        const account = await gramsrv.lookupAccount(input);
+        const displayName = [account.first_name, account.last_name].filter(Boolean).join(" ") || "—";
+        return ctx.reply(tr(ctx.from.id, "accountLookupResult", {
+          id: account.id, name: escapeHTML(displayName), username: escapeHTML(account.username ? `@${account.username}` : "—"),
+          phone: escapeHTML(account.phone || "—"), stars: account.stars_balance ?? 0,
+          rating: account.rating_stars ?? 0, level: account.rating_level ?? 0,
+          premium: account.premium_until > Math.floor(Date.now() / 1000) ? "✅" : "—",
+        }), { parse_mode: "HTML" });
+      } catch (error) {
+        if (String(error.message).includes(" 404:")) return ctx.reply(tr(ctx.from.id, "accountLookupNotFound"));
+        throw error;
+      }
+    }
     try {
       if (pending.kind === "account") {
         const id = Number(input);
@@ -632,6 +650,28 @@ export function createBot({ config, db, gramsrv }) {
         db.clearPending(ctx.from.id);
         await bot.api.sendMessage(telegramID, tr(telegramID, "paymentRefunded", { charge: escapeHTML(chargeID) }), { parse_mode: "HTML" }).catch(() => {});
         return ctx.reply(tr(ctx.from.id, "refundDone"));
+      }
+	  if (pending.kind === "admin_stars_all") {
+		const match = input.match(/^(\d+)\s+CONFIRM$/i);
+		const amount = Number(match?.[1] ?? 0);
+		if (!Number.isSafeInteger(amount) || amount <= 0) throw new Error("format: AMOUNT CONFIRM");
+		const result = await gramsrv.grantStarsAll(amount, "Telegram bot server-wide administrator grant", pending.payload.operationID);
+		db.clearPending(ctx.from.id);
+		return ctx.reply(tr(ctx.from.id, "starsGrantedAll", { amount, count: result.details?.recipient_count ?? 0 }));
+	  }
+      if (pending.kind === "admin_verification") {
+        const [verifierRaw, peerTypeRaw, peerRaw, templateRaw] = input.split(/\s+/);
+        const verifierBotID = positiveInteger(verifierRaw);
+        const peerID = positiveInteger(peerRaw);
+        const peerType = String(peerTypeRaw ?? "").toLowerCase();
+        const template = String(templateRaw ?? "").toLowerCase();
+        if (!verifierBotID || !peerID || !["user", "channel"].includes(peerType) || !["major", "hold", "representative"].includes(template)) {
+          throw new Error("format: VERIFIER_BOT_ID user|channel PEER_ID major|hold|representative");
+        }
+        const description = tr(ctx.from.id, `verificationDescription.${template}`);
+        await gramsrv.grantCustomVerification(verifierBotID, peerType, peerID, description, "Telegram bot third-party verification grant", pending.payload.operationID);
+        db.clearPending(ctx.from.id);
+        return ctx.reply(tr(ctx.from.id, "verificationGranted", { id: peerID, type: tr(ctx.from.id, `verificationPeer.${peerType}`), template }));
       }
       if (pending.kind === "admin_reply") {
         const [ticketRaw, ...words] = input.split(/\s+/); const ticketID = Number(ticketRaw), answer = words.join(" ").trim();

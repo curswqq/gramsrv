@@ -130,6 +130,19 @@ WHERE channel_id = $1 AND user_id = $2`, channelID, userID, member.ReadInboxMaxI
 		return domain.CreateChannelResult{}, fmt.Errorf("commit join channel: %w", err)
 	}
 	committed = true
+	// The durable row is authoritative immediately after commit. Do not wait for
+	// the asynchronous read-model listener: a warm cache here made the newly
+	// joined dialog disappear until reconnect and kept participants_count one
+	// revision behind.
+	if s.rowCache != nil {
+		s.rowCache.delete(channelID)
+	}
+	if s.memberCache != nil {
+		s.memberCache.delete(channelID, userID)
+	}
+	if s.dialogCache != nil {
+		s.dialogCache.delete(userID, channelID)
+	}
 	recipients, _ := s.ListActiveChannelMemberIDs(ctx, userID, channelID, 0)
 	return domain.CreateChannelResult{Channel: channel, Members: []domain.ChannelMember{member}, Message: msg, Event: event, Recipients: recipients}, nil
 }
@@ -259,6 +272,15 @@ WHERE id = $1`, channelID, channel.CreatorUserID, adminsDelta); err != nil {
 		return domain.CreateChannelResult{}, fmt.Errorf("commit leave channel: %w", err)
 	}
 	committed = true
+	if s.rowCache != nil {
+		s.rowCache.delete(channelID)
+	}
+	if s.memberCache != nil {
+		s.memberCache.delete(channelID, userID)
+	}
+	if s.dialogCache != nil {
+		s.dialogCache.delete(userID, channelID)
+	}
 	recipients = append(recipients, userID)
 	return domain.CreateChannelResult{Channel: channel, Members: members, Message: msg, Event: event, Recipients: recipients}, nil
 }

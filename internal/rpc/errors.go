@@ -102,6 +102,7 @@ func urlInvalidErr() error { return tgerr.New(400, "URL_INVALID") }
 func filePartInvalidErr() error      { return tgerr.New(400, "FILE_PART_INVALID") }
 func filePartsInvalidErr() error     { return tgerr.New(400, "FILE_PARTS_INVALID") }
 func filePartTooBigErr() error       { return tgerr.New(400, "FILE_PART_TOO_BIG") }
+func fileTooBigErr() error           { return tgerr.New(400, "FILE_TOO_BIG") }
 func fileReferenceInvalidErr() error { return tgerr.New(400, "FILE_REFERENCE_INVALID") }
 func locationInvalidErr() error      { return tgerr.New(400, "LOCATION_INVALID") }
 func fileIDInvalidErr() error        { return tgerr.New(400, "FILE_ID_INVALID") }

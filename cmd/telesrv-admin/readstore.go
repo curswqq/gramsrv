@@ -437,6 +437,9 @@ type StarGiftRow struct {
 	Height        int
 	FrameRate     float64
 	ReceivedCount int64 `json:"ReceivedCount,string"`
+	UpgradeStars  int64 `json:"UpgradeStars,string"`
+	UpgradeSupply int
+	UpgradeIssued int
 	CreatedBy     string
 	UpdatedAt     time.Time
 }
@@ -447,9 +450,11 @@ SELECT c.gift_id, r.id, r.revision, r.title, r.stars, r.convert_stars,
        c.enabled, c.sort_order, r.document_id, r.source_name, r.source_format,
        encode(r.animation_sha256, 'hex'), d.size, r.width, r.height, r.frame_rate,
        (SELECT COUNT(*) FROM peer_star_gifts p WHERE p.gift_id = c.gift_id),
+       COALESCE(cr.upgrade_stars, 0), COALESCE(cr.supply_total, 0), COALESCE(cr.issued, 0),
        r.created_by, c.updated_at
 FROM star_gift_catalog c
 JOIN star_gift_catalog_revisions r ON r.id = c.active_revision_id
+LEFT JOIN star_gift_collectible_revisions cr ON cr.id = c.collectible_revision_id AND cr.status = 'published'
 JOIN documents d ON d.id = r.document_id
 ORDER BY c.sort_order, c.gift_id
 LIMIT $1`, domain.MaxStarGiftCatalogSize)
@@ -464,7 +469,8 @@ LIMIT $1`, domain.MaxStarGiftCatalogSize)
 			&row.GiftID, &row.RevisionID, &row.Revision, &row.Title, &row.Stars, &row.ConvertStars,
 			&row.Enabled, &row.SortOrder, &row.DocumentID, &row.SourceName, &row.SourceFormat,
 			&row.AnimationSHA, &row.AnimationSize, &row.Width, &row.Height, &row.FrameRate,
-			&row.ReceivedCount, &row.CreatedBy, &row.UpdatedAt,
+			&row.ReceivedCount, &row.UpgradeStars, &row.UpgradeSupply, &row.UpgradeIssued,
+			&row.CreatedBy, &row.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

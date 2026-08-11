@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -8,6 +9,37 @@ import (
 
 	"telesrv/internal/domain"
 )
+
+type premiumCacheInvalidationUsers struct {
+	invalidated []int64
+}
+
+func (*premiumCacheInvalidationUsers) Self(context.Context, int64) (domain.User, error) {
+	return domain.User{}, nil
+}
+
+func (*premiumCacheInvalidationUsers) ByID(context.Context, int64, int64) (domain.User, bool, error) {
+	return domain.User{}, false, nil
+}
+
+func (*premiumCacheInvalidationUsers) ByIDs(context.Context, int64, []int64) ([]domain.User, error) {
+	return nil, nil
+}
+
+func (u *premiumCacheInvalidationUsers) InvalidateUsers(_ context.Context, userIDs ...int64) {
+	u.invalidated = append(u.invalidated, userIDs...)
+}
+
+func TestNotifyUserChangedInvalidatesBaseUserCache(t *testing.T) {
+	users := &premiumCacheInvalidationUsers{}
+	r := &Router{deps: Deps{Users: users}}
+	if err := r.NotifyUserChanged(context.Background(), domain.User{ID: 1780243200}); err != nil {
+		t.Fatal(err)
+	}
+	if len(users.invalidated) != 1 || users.invalidated[0] != 1780243200 {
+		t.Fatalf("invalidated = %v, want [1780243200]", users.invalidated)
+	}
+}
 
 func TestTgUserPremiumFlag(t *testing.T) {
 	now := time.Now().Unix()

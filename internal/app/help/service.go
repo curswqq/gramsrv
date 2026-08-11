@@ -60,7 +60,12 @@ const tdesktopClient = "tdesktop"
 const tdesktopDefaultAppConfigBase = `{"chat_read_mark_expire_period":604800,"chat_read_mark_size_threshold":50,"pm_read_date_expire_period":604800,"quote_length_max":1024,"telegram_antispam_group_size_min":200,"telegram_antispam_user_id":"5434988373","fragment_prefixes":["888"],"forum_upgrade_participants_min":2,"reactions_default":{"_":"reactionEmoji","emoticon":"👍"},"reactions_uniq_max":11,"reactions_user_max_default":1,"reactions_user_max_premium":3,"reactions_in_chat_max":3,"boosts_channel_level_max":100,"rich_message_posting":"enabled","upload_markup_video":true,"emojies_send_dice":["🎲","🎯","🏀","⚽","⚽️","🎳","🎰"],"premium_purchase_blocked":false,"premium_gift_attach_menu_icon":true,"premium_gift_text_field_icon":true,"gift_text_length_max":128,"stars_purchase_blocked":false,"stargifts_blocked":false,"stargifts_pinned_to_top_limit":6,"giveaway_gifts_purchase_available":true,"giveaway_boosts_per_premium":4,"giveaway_countries_max":10,"giveaway_add_peers_max":10,"giveaway_period_max":604800,"stories_stealth_future_period":1500,"stories_stealth_past_period":300,"stories_stealth_cooldown_period":10800,"quick_replies_limit":100,"quick_reply_messages_limit":20,"business_chat_links_limit":100,"dialog_filters_enabled":true,"chatlist_update_period":3600,"chatlist_invites_limit_default":3,"chatlist_invites_limit_premium":20,"chatlists_joined_limit_default":2,"chatlists_joined_limit_premium":20,"about_length_limit_default":70,"about_length_limit_premium":140,"bot_verification_description_length_limit":70,"caption_length_limit_default":1024,"caption_length_limit_premium":4096,"channels_limit_default":500,"channels_limit_premium":1000,"channels_public_limit_default":10,"channels_public_limit_premium":20,"dialog_filters_limit_default":10,"dialog_filters_limit_premium":20,"dialog_filters_chats_limit_default":100,"dialog_filters_chats_limit_premium":200,"dialogs_pinned_limit_default":5,"dialogs_pinned_limit_premium":10,"dialogs_folder_pinned_limit_default":100,"dialogs_folder_pinned_limit_premium":200,"saved_dialogs_pinned_limit_default":5,"saved_dialogs_pinned_limit_premium":100,"saved_gifs_limit_default":200,"saved_gifs_limit_premium":400,"stickers_faved_limit_default":5,"stickers_faved_limit_premium":10,"recommended_channels_limit_default":10,"recommended_channels_limit_premium":100,"aicompose_tone_examples_num":3,"aicompose_tone_title_length_max":12,"aicompose_tone_prompt_length_max":1024,"aicompose_tone_saved_limit_default":5,"aicompose_tone_saved_limit_premium":20,"upload_max_fileparts_default":4000,"upload_max_fileparts_premium":8000`
 const tdesktopNoForwardsAppConfig = `,"no_forwards_request_expire_period":86400`
 
-const defaultAppConfigHash = 28 // 默认 app config 内容变更时必须递增，否则缓存端只会收到 notModified。
+// TDesktop hides Settings > Privacy > "Charge for messages" unless this
+// app-config capability is advertised, even though the underlying
+// account.get/setGlobalPrivacySettings fields are already implemented.
+const tdesktopPaidMessagesAppConfig = `,"stars_paid_messages_available":true`
+
+const defaultAppConfigHash = 30 // 默认 app config 内容变更时必须递增，否则缓存端只会收到 notModified。
 
 // Service 提供客户端启动配置与国家区号目录。
 //
@@ -152,15 +157,20 @@ func defaultAppConfigJSONWithPremiumBot(mapboxToken, premiumBotUsername string) 
 	username, _ := json.Marshal(premiumBotUsername)
 	premiumFragment := `,"premium_bot_username":` + string(username)
 	androidInvoiceBilling := `,"premium_playmarket_direct_currency_list":` + compatandroid.DirectInvoiceCurrenciesJSON()
+	// Keep the Stars surfaces visible even while the local development top-up
+	// provider is disabled. Purchase RPCs remain gated by server configuration;
+	// this flag only controls whether clients hide the balance and Stars menu.
+	baseConfig := strings.Replace(tdesktopDefaultAppConfigBase,
+		`"giveaway_gifts_purchase_available":true`, `"giveaway_gifts_purchase_available":false`, 1)
 	if mapboxToken == "" {
-		return []byte(tdesktopDefaultAppConfigBase + tdesktopNoForwardsAppConfig + premiumFragment + androidInvoiceBilling + `}`)
+		return []byte(baseConfig + tdesktopNoForwardsAppConfig + tdesktopPaidMessagesAppConfig + premiumFragment + androidInvoiceBilling + `}`)
 	}
 	token, err := json.Marshal(mapboxToken)
 	if err != nil {
-		return []byte(tdesktopDefaultAppConfigBase + tdesktopNoForwardsAppConfig + premiumFragment + androidInvoiceBilling + `}`)
+		return []byte(baseConfig + tdesktopNoForwardsAppConfig + tdesktopPaidMessagesAppConfig + premiumFragment + androidInvoiceBilling + `}`)
 	}
 	tokenJSON := string(token)
-	return []byte(tdesktopDefaultAppConfigBase + tdesktopNoForwardsAppConfig + premiumFragment + androidInvoiceBilling + `,"tdesktop_config_map":{"maps":` + tokenJSON + `,"geo":` + tokenJSON + `,"bmaps":` + tokenJSON + `,"bgeo":` + tokenJSON + `}}`)
+	return []byte(baseConfig + tdesktopNoForwardsAppConfig + tdesktopPaidMessagesAppConfig + premiumFragment + androidInvoiceBilling + `,"tdesktop_config_map":{"maps":` + tokenJSON + `,"geo":` + tokenJSON + `,"bmaps":` + tokenJSON + `,"bgeo":` + tokenJSON + `}}`)
 }
 
 func defaultAppConfigHashFor(mapboxToken string) int {
@@ -171,7 +181,9 @@ func defaultAppConfigHashForPremiumBot(mapboxToken, premiumBotUsername string) i
 	if !domain.ValidBotUsername(premiumBotUsername) {
 		premiumBotUsername = domain.PremiumBotUser().Username
 	}
-	hash := defaultAppConfigHash
+	// Feature revision 1: stars_paid_messages_available. Keep the persisted
+	// default distinguishable from clients that cached the previous payload.
+	hash := defaultAppConfigHash + 1
 	if premiumBotUsername != domain.PremiumBotUser().Username {
 		hash += 1 + int(crc32.ChecksumIEEE([]byte(premiumBotUsername))&0x1fffffff)
 	}
@@ -252,7 +264,8 @@ func (s *Service) loadAppConfig(ctx context.Context) domain.AppConfig {
 		// DB 行允许运维覆盖，但 hash 落后于代码默认值时视为陈旧（历史 seed 残留），
 		// 以默认值为准——否则新增配置 key 永远被旧行遮蔽（曾导致 emojies_send_dice 未下发）。
 		// 读失败也回退默认值(默认值恒有效),不让一次瞬时 DB 抖动污染整个进程生命周期的缓存。
-		if err != nil || !found || cfg.Hash < defaultAppConfigHash {
+		if err != nil || !found || cfg.Hash < defaultAppConfigHash ||
+			!strings.Contains(string(cfg.JSON), `"stars_paid_messages_available"`) {
 			cfg = defaultCfg
 		}
 		s.appConfigCache = cfg

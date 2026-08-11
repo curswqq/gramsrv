@@ -151,6 +151,9 @@ type Message struct {
 	// （🎉/👍 等），发送方与接收方双盒持同一非零值并各自播放一次；非特效消息恒 0。
 	// 转发不携带特效（新消息恒 0）。仅私聊；群/频道不渲染。
 	Effect int64
+	// PaidMessageStars is the amount charged to the sender for this private
+	// message. Both account-local projections carry the same sent amount.
+	PaidMessageStars int64
 	// ReplyMarkup 是 bot 消息携带的 reply/inline keyboard 快照。仅 bot 出站消息可
 	// 非空；普通用户消息恒 nil（发送侧 is_bot 闸门）。双盒持同一快照（无 per-viewer 差异）。
 	ReplyMarkup *MessageReplyMarkup
@@ -334,6 +337,10 @@ type SendPrivateTextRequest struct {
 	GroupedID int64
 	// Effect 消息特效 id（私聊专属，0 表无特效；调用方已对 catalog 校验过合法性）。
 	Effect int64
+	// PaidMessageStars is the actual recipient price resolved by the RPC layer,
+	// not the caller's maximum authorization. The store debits it atomically
+	// with message creation and ignores it for exact committed replays.
+	PaidMessageStars int64
 	// BusinessAutomationKind is internal app-layer metadata used to suppress
 	// recursive greeting/away automation for server-generated replies.
 	BusinessAutomationKind BusinessAutomationKind
@@ -362,11 +369,13 @@ type PrivateSendReplayRequest struct {
 
 // SendPrivateTextResult 描述一次私聊文本发送的双端结果。
 type SendPrivateTextResult struct {
-	SenderMessage    Message
-	RecipientMessage Message
-	SenderEvent      UpdateEvent
-	RecipientEvent   UpdateEvent
-	Duplicate        bool
+	SenderMessage         Message
+	RecipientMessage      Message
+	SenderEvent           UpdateEvent
+	RecipientEvent        UpdateEvent
+	Duplicate             bool
+	SenderStarsBalance    *StarsBalance
+	RecipientStarsBalance *StarsBalance
 	// ReplayDeleteEvent is the already-durable sender-side deletion that must
 	// follow the first-send snapshot in an exact random_id replay. It never
 	// represents a newly allocated event.
@@ -753,19 +762,23 @@ type UnpinAllPrivateMessagesRequest struct {
 // ScheduledMessage is a pending account-owned message that has not entered
 // normal peer history yet.
 type ScheduledMessage struct {
-	OwnerUserID          int64
-	ID                   int
-	Peer                 Peer
-	RandomID             int64
-	Message              string
-	Entities             []MessageEntity
-	Media                *MessageMedia
-	RichMessage          *MessageRichMessage
-	Silent               bool
-	NoForwards           bool
-	ReplyTo              *MessageReply
-	Forward              *MessageForward
-	SendAs               *Peer
+	OwnerUserID int64
+	ID          int
+	Peer        Peer
+	RandomID    int64
+	Message     string
+	Entities    []MessageEntity
+	Media       *MessageMedia
+	RichMessage *MessageRichMessage
+	Silent      bool
+	NoForwards  bool
+	ReplyTo     *MessageReply
+	Forward     *MessageForward
+	SendAs      *Peer
+	// AllowPaidStars is the sender-approved per-dispatch ceiling retained for
+	// scheduled private messages. The actual recipient price is resolved when
+	// the message leaves the scheduled queue.
+	AllowPaidStars       int64
 	ScheduleDate         int
 	ScheduleRepeatPeriod int
 	CreatedAt            int
@@ -795,6 +808,7 @@ type ScheduleMessageRequest struct {
 	ReplyTo              *MessageReply
 	Forward              *MessageForward
 	SendAs               *Peer
+	AllowPaidStars       int64
 	ScheduleDate         int
 	ScheduleRepeatPeriod int
 	Date                 int

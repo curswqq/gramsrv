@@ -64,6 +64,7 @@ func (r *Router) sendStarGiftUpgradeForm(ctx context.Context, userID, formID int
 		return nil, starGiftUpgradeErr(err)
 	}
 	r.invalidateStarGiftOwnerProjection(saved.Owner)
+	r.refreshAccountRatings(ctx, userID)
 	updates := r.tgStarGiftUpgradeUpdates(ctx, userID, result, true)
 	return &tg.PaymentsPaymentResult{Updates: updates}, nil
 }
@@ -109,6 +110,7 @@ func (r *Router) onPaymentsUpgradeStarGift(ctx context.Context, req *tg.Payments
 		return nil, starGiftUpgradeErr(err)
 	}
 	r.invalidateStarGiftOwnerProjection(saved.Owner)
+	r.refreshAccountRatings(ctx, userID)
 	return r.tgStarGiftUpgradeUpdates(ctx, userID, result, false), nil
 }
 
@@ -153,7 +155,7 @@ func (r *Router) starGiftUpgradePreviewForSaved(ctx context.Context, saved domai
 	if err != nil {
 		return domain.StarGiftUpgradePreview{}, internalErr()
 	}
-	if !found || preview.UpgradeStars <= 0 || preview.Issued >= preview.SupplyTotal {
+	if !found || preview.UpgradeStars <= 0 || (!saved.HasCollectibleReservation && preview.Issued >= preview.SupplyTotal) {
 		return domain.StarGiftUpgradePreview{}, starGiftInvalidErr()
 	}
 	return preview, nil

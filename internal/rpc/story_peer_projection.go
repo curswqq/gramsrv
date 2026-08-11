@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"time"
 
 	"github.com/iamxvbaba/td/tg"
 	"go.uber.org/zap"
@@ -544,9 +545,60 @@ func appendUniqueTGChats(base []tg.ChatClass, extra ...tg.ChatClass) []tg.ChatCl
 // single-peer fields and fan-out builders use the corresponding narrow/preload
 // helpers instead.
 func (r *Router) applyPeerReadModels(ctx context.Context, viewerUserID int64, users []tg.UserClass, chats []tg.ChatClass) {
+	r.withBotProfileFlagsForUsers(ctx, users)
+	r.applyPrivateContactRestrictionsToUsers(ctx, viewerUserID, users)
 	r.applyStoryMaxIDsToPeerObjects(ctx, viewerUserID, users, chats)
 	r.applyUsernamesToPeerObjects(ctx, users, chats)
 	r.applyBotVerificationIconsToPeerObjects(ctx, users, chats)
+}
+
+// applyPeerReadModelsForOutbox is the viewer-specific part of
+// applyPeerReadModels. Usernames are deliberately omitted because the outbox
+// builder projects their viewer-independent union once per claim.
+func (r *Router) applyPeerReadModelsForOutbox(ctx context.Context, viewerUserID int64, users []tg.UserClass, chats []tg.ChatClass) {
+	r.applyAuthoritativeSelfPremium(ctx, viewerUserID, users)
+	r.withBotProfileFlagsForUsers(ctx, users)
+	r.applyPrivateContactRestrictionsToUsers(ctx, viewerUserID, users)
+	r.applyStoryMaxIDsToPeerObjects(ctx, viewerUserID, users, chats)
+	r.applyBotVerificationIconsToPeerObjects(ctx, users, chats)
+}
+
+// applyAuthoritativeSelfPremium repairs self snapshots assembled from dialog or
+// message projections. Those rows can legitimately lag the users aggregate by
+// one read-model revision; if such a snapshot replaces the client's cached self
+// object, Premium UI (notably emoji status) is incorrectly locked until the next
+// full authorization. Resolve only when the response actually contains self, so
+// ordinary peer envelopes pay no extra lookup.
+func (r *Router) applyAuthoritativeSelfPremium(ctx context.Context, viewerUserID int64, users []tg.UserClass) {
+	if viewerUserID == 0 || r.deps.Users == nil || len(users) == 0 {
+		return
+	}
+	var targets []*tg.User
+	for _, item := range users {
+		if user, ok := item.(*tg.User); ok && user != nil && user.ID == viewerUserID {
+			targets = append(targets, user)
+		}
+	}
+	if len(targets) == 0 {
+		return
+	}
+	self, found, err := r.deps.Users.ByID(ctx, viewerUserID, viewerUserID)
+	if err != nil || !found {
+		return
+	}
+	now := time.Now().Unix()
+	if r.clock != nil {
+		now = r.clock.Now().Unix()
+	}
+	for _, user := range targets {
+		if !self.PremiumActiveAt(now) {
+			continue
+		}
+		user.Premium = true
+		if self.EmojiStatusActiveAt(now) {
+			user.SetEmojiStatus(tgUserEmojiStatus(self, now))
+		}
+	}
 }
 
 func (r *Router) applyStoryMaxIDsToPeerObjects(ctx context.Context, viewerUserID int64, users []tg.UserClass, chats []tg.ChatClass) {

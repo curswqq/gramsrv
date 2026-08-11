@@ -132,6 +132,46 @@ func projectPrivateStarGiftPurchase(
 	return privateSendMediaProjection{Shared: shared, Sender: sender, Recipient: recipient}, nil
 }
 
+// projectPrivateStarGiftTransfer projects messageActionStarGiftUnique.from_id
+// for each participant's message box. Telegram Desktop interprets this field
+// as the new owner in the outgoing copy, but as the previous owner in the
+// incoming copy. Persisting the previous owner in both copies therefore makes
+// the sender see their own name instead of the recipient's name.
+//
+// The shared logical message keeps the real transfer source. Only the two
+// account-local projections use the counterpart expected by the client.
+func projectPrivateStarGiftTransfer(
+	_ context.Context,
+	_ pgx.Tx,
+	req *domain.SendPrivateTextRequest,
+) (privateSendMediaProjection, error) {
+	if req == nil || req.Media == nil || req.SenderUserID <= 0 || req.RecipientUserID <= 0 {
+		return privateSendMediaProjection{}, fmt.Errorf("project private star gift transfer: invalid scope")
+	}
+	action := privateStarGiftUniqueAction(req.Media)
+	if action == nil || !action.Transferred {
+		return privateSendMediaProjection{}, fmt.Errorf("project private star gift transfer: unsupported media")
+	}
+
+	shared, err := cloneMessageMedia(req.Media)
+	if err != nil {
+		return privateSendMediaProjection{}, err
+	}
+	sender, err := cloneMessageMedia(req.Media)
+	if err != nil {
+		return privateSendMediaProjection{}, err
+	}
+	recipient, err := cloneMessageMedia(req.Media)
+	if err != nil {
+		return privateSendMediaProjection{}, err
+	}
+
+	privateStarGiftUniqueAction(shared).FromUserID = req.SenderUserID
+	privateStarGiftUniqueAction(sender).FromUserID = req.RecipientUserID
+	privateStarGiftUniqueAction(recipient).FromUserID = req.SenderUserID
+	return privateSendMediaProjection{Shared: shared, Sender: sender, Recipient: recipient}, nil
+}
+
 func cloneMessageMedia(media *domain.MessageMedia) (*domain.MessageMedia, error) {
 	encoded, err := encodeMessageMedia(media)
 	if err != nil {

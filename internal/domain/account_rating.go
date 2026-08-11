@@ -14,7 +14,7 @@ import (
 // render it without a client patch.
 const (
 	// MaxAccountRatingLevel bounds the local gramsrv level.
-	MaxAccountRatingLevel = 50
+	MaxAccountRatingLevel = 500
 	// accountRatingLevelUnit is the score required for level 1. Thresholds grow
 	// quadratically from it: level n needs accountRatingLevelUnit * n^2.
 	accountRatingLevelUnit = 100
@@ -228,6 +228,13 @@ func ComputeAccountRating(signals AccountRatingSignals, weights AccountRatingWei
 	activityComponent := max64(signals.MessagesSent, 0)*weights.PerMessageSent +
 		max64(signals.AccountAgeDays, 0)*weights.PerAccountAgeDay +
 		max64(signals.GiftsReceived, 0)*weights.PerGiftReceived
+	// Every ordinary account starts at level 1 and economic/activity signals
+	// accumulate on top of that floor. Without an additive baseline, the first
+	// small gift purchase could replace a clean account's 100-point bootstrap
+	// with a lower computed score, making normal activity appear to reduce trust.
+	if signals.UserID > 0 {
+		activityComponent += AccountRatingLevelThreshold(1)
+	}
 	if weights.ActivityCap > 0 && activityComponent > weights.ActivityCap {
 		activityComponent = weights.ActivityCap
 	}
@@ -239,7 +246,6 @@ func ComputeAccountRating(signals AccountRatingSignals, weights AccountRatingWei
 	if signals.Fake {
 		penalty += weights.FakePenalty
 	}
-
 	total := starsComponent + activityComponent + signals.Manual - penalty
 	if total < 0 {
 		total = 0

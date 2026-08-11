@@ -164,6 +164,18 @@ type starsDebitService interface {
 	DebitStars(context.Context, admin.DebitStarsRequest) (admin.CommandResult, error)
 }
 
+type starsBulkService interface {
+	GrantStarsAll(context.Context, admin.GrantStarsAllRequest) (admin.CommandResult, error)
+}
+
+type accountLookupService interface {
+	LookupAccount(context.Context, string) (admin.AccountLookup, bool, error)
+}
+
+type customVerificationGrantService interface {
+	GrantCustomVerification(context.Context, admin.GrantCustomVerificationRequest) (admin.CommandResult, error)
+}
+
 func Start(ctx context.Context, cfg Config, svc Service, log *zap.Logger) (*http.Server, error) {
 	cfg.Addr = strings.TrimSpace(cfg.Addr)
 	if cfg.Addr == "" {
@@ -219,7 +231,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /v1/premium/users/{id}/entitlements", s.authorized(PermissionPremiumManage, s.handlePremiumEntitlements))
 	mux.HandleFunc("GET /v1/premium/payments/{id}", s.authorized(PermissionPremiumManage, s.handlePremiumPayment))
 	mux.HandleFunc("POST /v1/accounts/grant-stars", s.authenticated(s.handleGrantStars))
+	mux.HandleFunc("POST /v1/accounts/grant-stars-all", s.authenticated(s.handleGrantStarsAll))
 	mux.HandleFunc("POST /v1/accounts/debit-stars", s.authenticated(s.handleDebitStars))
+	mux.HandleFunc("GET /v1/accounts/lookup", s.authenticated(s.handleLookupAccount))
 	mux.HandleFunc("POST /v1/accounts/set-verified", s.authenticated(s.handleSetVerified))
 	mux.HandleFunc("POST /v1/accounts/set-flags", s.authenticated(s.handleSetUserFlags))
 	mux.HandleFunc("POST /v1/accounts/set-support", s.authenticated(s.handleSetSupport))
@@ -231,6 +245,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /v1/accounts/set-avatar", s.authenticated(s.handleSetAccountAvatar))
 	mux.HandleFunc("POST /v1/accounts/set-color", s.authenticated(s.handleSetUserColor))
 	mux.HandleFunc("POST /v1/accounts/set-emoji-status", s.authenticated(s.handleSetUserEmojiStatus))
+	mux.HandleFunc("POST /v1/botverification/grant-mark", s.authenticated(s.handleGrantCustomVerification))
 	mux.HandleFunc("POST /v1/accounts/revoke-sessions", s.authenticated(s.handleRevokeSessions))
 	mux.HandleFunc("POST /v1/channels/set-verified", s.authenticated(s.handleSetChannelVerified))
 	mux.HandleFunc("POST /v1/channels/set-flags", s.authenticated(s.handleSetChannelFlags))
@@ -462,6 +477,52 @@ func (s *Server) handleGrantStars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := s.svc.GrantStars(r.Context(), req)
+	writeCommandResult(w, result, err)
+}
+
+func (s *Server) handleGrantStarsAll(w http.ResponseWriter, r *http.Request) {
+	var req admin.GrantStarsAllRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	service, ok := s.svc.(starsBulkService)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "bulk stars grant is not configured")
+		return
+	}
+	result, err := service.GrantStarsAll(r.Context(), req)
+	writeCommandResult(w, result, err)
+}
+
+func (s *Server) handleLookupAccount(w http.ResponseWriter, r *http.Request) {
+	service, ok := s.svc.(accountLookupService)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "account lookup is not configured")
+		return
+	}
+	account, found, err := service.LookupAccount(r.Context(), r.URL.Query().Get("query"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, account)
+}
+
+func (s *Server) handleGrantCustomVerification(w http.ResponseWriter, r *http.Request) {
+	var req admin.GrantCustomVerificationRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	service, ok := s.svc.(customVerificationGrantService)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "third-party verification grant is not configured")
+		return
+	}
+	result, err := service.GrantCustomVerification(r.Context(), req)
 	writeCommandResult(w, result, err)
 }
 

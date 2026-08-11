@@ -15,6 +15,16 @@ export class GramsrvClient {
     return text ? JSON.parse(text) : {};
   }
 
+  async get(route) {
+    const response = await fetch(`${this.config.gramsrvAPI}${route}`, {
+      headers: { authorization: `Bearer ${this.config.gramsrvToken}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`gramsrv ${route} ${response.status}: ${text.slice(0, 500)}`);
+    return text ? JSON.parse(text) : {};
+  }
+
   command(reason, fields, idempotencyKey = "") {
     const digest = idempotencyKey ? createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 40) : randomUUID();
     return { command_id: `bot-${digest}`, actor: this.config.gramsrvActor, reason, dry_run: false, ...fields };
@@ -22,6 +32,23 @@ export class GramsrvClient {
 
   grantStars(userID, amount, reason = "Telegram bot purchase", idempotencyKey = "") {
     return this.post("/v1/accounts/grant-stars", this.command(reason, { user_id: userID, amount }, idempotencyKey));
+  }
+
+  grantStarsAll(amount, reason = "Telegram bot server-wide grant", idempotencyKey = "") {
+    return this.post("/v1/accounts/grant-stars-all", this.command(reason, { amount }, idempotencyKey));
+  }
+
+  lookupAccount(query) {
+    return this.get(`/v1/accounts/lookup?query=${encodeURIComponent(String(query ?? "").trim())}`);
+  }
+
+  grantCustomVerification(verifierBotID, peerType, peerID, description, reason = "Telegram bot administrator grant", idempotencyKey = "") {
+    return this.post("/v1/botverification/grant-mark", this.command(reason, {
+      verifier_bot_id: verifierBotID,
+      peer_type: peerType,
+      peer_id: peerID,
+      description,
+    }, idempotencyKey));
   }
 
   debitStars(userID, amount, reason = "Telegram bot refund", idempotencyKey = "") {

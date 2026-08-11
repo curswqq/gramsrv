@@ -747,7 +747,11 @@ SELECT disallow_premium_gifts FROM account_settings WHERE user_id=$1
 	if form.Kind == domain.PremiumPurchaseGift && form.RecipientUserID == form.BuyerUserID {
 		return domain.PremiumPaymentForm{}, domain.PremiumEntitlement{}, domain.User{}, domain.StarsBalance{}, domain.ErrPremiumGiftSelf
 	}
-	if form.Kind == domain.PremiumPurchaseGift && premiumUntil != nil && int(premiumUntil.Unix()) > req.Date {
+	// Premium purchases are not renewals: both self purchases and gifts must
+	// fail while the recipient already has an active entitlement. Keep this
+	// check under the recipient row lock so two different forms cannot race and
+	// stack subscriptions even when clients present different payment dialogs.
+	if premiumUntil != nil && int(premiumUntil.Unix()) > req.Date {
 		return domain.PremiumPaymentForm{}, domain.PremiumEntitlement{}, domain.User{}, domain.StarsBalance{},
 			domain.PremiumSubscriptionActiveError{Until: int(premiumUntil.Unix())}
 	}
@@ -784,9 +788,6 @@ VALUES($1,'user',$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
 	}
 
 	startsAt := req.Date
-	if premiumUntil != nil && int(premiumUntil.Unix()) > startsAt {
-		startsAt = int(premiumUntil.Unix())
-	}
 	expiresAt := int(time.Unix(int64(startsAt), 0).Add(time.Duration(form.DurationDays) * 24 * time.Hour).Unix())
 	source := domain.PremiumEntitlementPurchase
 	if form.Kind == domain.PremiumPurchaseGift {

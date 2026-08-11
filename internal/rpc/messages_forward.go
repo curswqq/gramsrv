@@ -143,11 +143,13 @@ func (r *Router) onMessagesForwardMessages(ctx context.Context, req *tg.Messages
 	if err != nil {
 		return nil, err
 	}
+	paidMessageStars := int64(0)
 	if toPeer.Type == domain.PeerTypeUser {
 		if req.AllowPaidFloodskip {
 			return nil, paymentUnsupportedErr()
 		}
-		if err := r.ensurePrivateContactAllowed(ctx, userID, toPeer.ID, req.AllowPaidStars, len(absentIndexes)); err != nil {
+		paidMessageStars, err = r.privateContactPaidStars(ctx, userID, toPeer.ID, req.AllowPaidStars, len(absentIndexes))
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -283,6 +285,7 @@ func (r *Router) onMessagesForwardMessages(ctx context.Context, req *tg.Messages
 		sessionID, _ := SessionIDFrom(ctx)
 		authKeyID := rawAuthKeyIDForOrigin(ctx)
 		res := domain.ForwardPrivateMessagesResult{OwnerUserID: userID}
+		var lastSenderStarsBalance *domain.StarsBalance
 		for i, source := range sources {
 			if replays[i].found {
 				sent := replays[i].private
@@ -321,12 +324,22 @@ func (r *Router) onMessagesForwardMessages(ctx context.Context, req *tg.Messages
 				RecipientBlocked:       recipientBlocked,
 				IdempotencyFingerprint: idempotencyFingerprints[i],
 				IdempotencyPreflighted: replays[i].checked,
+				PaidMessageStars:       paidMessageStars,
 			})
 			if err != nil {
 				return nil, messageForwardErr(err)
 			}
 			if !sent.Duplicate {
 				r.enqueueBotAPIPrivateMessageUpdateAsync(ctx, sent)
+				if sent.SenderStarsBalance != nil {
+					_ = r.NotifyStarsBalanceChanged(ctx, *sent.SenderStarsBalance)
+				}
+				if sent.RecipientStarsBalance != nil {
+					_ = r.NotifyStarsBalanceChanged(ctx, *sent.RecipientStarsBalance)
+				}
+			}
+			if sent.SenderStarsBalance != nil {
+				lastSenderStarsBalance = sent.SenderStarsBalance
 			}
 			res.SenderMessages = append(res.SenderMessages, sent.SenderMessage)
 			res.RecipientMessages = append(res.RecipientMessages, sent.RecipientMessage)
@@ -335,7 +348,12 @@ func (r *Router) onMessagesForwardMessages(ctx context.Context, req *tg.Messages
 			res.Duplicates = append(res.Duplicates, sent.Duplicate)
 			res.ReplayDeleteEvents = append(res.ReplayDeleteEvents, sent.ReplayDeleteEvent)
 		}
-		return tgForwardMessagesUpdates(res, req.RandomID, r.usersForMessageUpdates(ctx, userID, res.SenderMessages), r.chatsForMessageUpdates(ctx, userID, res.SenderMessages)), nil
+		updates := tgForwardMessagesUpdates(res, req.RandomID, r.usersForMessageUpdates(ctx, userID, res.SenderMessages), r.chatsForMessageUpdates(ctx, userID, res.SenderMessages))
+		if lastSenderStarsBalance != nil {
+			updates.Updates = append(updates.Updates, &tg.UpdateStarsBalance{Balance: &tg.StarsAmount{Amount: lastSenderStarsBalance.Balance}})
+			r.refreshAccountRatings(ctx, userID, toPeer.ID)
+		}
+		return updates, nil
 	}
 	return nil, peerIDInvalidErr()
 }
@@ -759,6 +777,8 @@ func (r *Router) applyForwardAuthorPrivacy(ctx context.Context, forwarderUserID 
 
 func messageForwardErr(err error) error {
 	switch {
+	case errors.Is(err, domain.ErrStarsInsufficient):
+		return balanceTooLowErr()
 	case errors.Is(err, domain.ErrMessageIDInvalid):
 		return messageIDInvalidErr()
 	case errors.Is(err, domain.ErrChatForwardsRestricted):

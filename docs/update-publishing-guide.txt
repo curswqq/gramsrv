@@ -1,0 +1,615 @@
+ПУБЛИКАЦИЯ ОБНОВЛЕНИЙ КЛИЕНТОВ НА TELESRV-UPDATE
+=================================================
+
+Проекты:
+
+- TDesktop: E:\projects\tdesktop
+- Gramsrv: E:\projects\test-1\gramsrv
+- приватные ключи: E:\projects\DesktopPrivate
+
+Пример: Windows x64, stable, TDesktop 7.0.9, AppVersion 7000009.
+
+
+ГЛАВНЫЙ ПРИНЦИП
+----------------
+
+Packer подписывает пакет на защищённой машине сборки. На update-сервер
+загружается только готовый подписанный пакет. Приватный ключ на сервер не
+передаётся.
+
+Правильный порядок:
+
+1. Собрать и протестировать клиент.
+2. Создать пакет штатным Packer и получить Signature verified!.
+3. Рассчитать SHA-256 и размер.
+4. Загрузить пакет под новым уникальным именем.
+5. Подготовить manifest.next.json отдельно от активного manifest.json.
+6. Проверить его через telesrv-update -check.
+7. Атомарно заменить manifest.json.
+8. Проверить локальные и публичные endpoints.
+9. Проверить обновление на тестовом клиенте старой версии.
+
+Нельзя сначала публиковать manifest, а потом загружать файл. Нельзя заменять
+содержимое уже опубликованного пакета с прежним именем.
+
+
+1. ОДНОРАЗОВАЯ ПОДГОТОВКА СЕРВЕРА
+---------------------------------
+
+Откройте PowerShell:
+
+Set-Location E:\projects\test-1\gramsrv
+New-Item -ItemType Directory -Force .\data\updates\files | Out-Null
+New-Item -ItemType Directory -Force .\out | Out-Null
+
+Если активного manifest ещё нет:
+
+Copy-Item `
+  -LiteralPath .\deploy\update\manifest.example.json `
+  -Destination .\data\updates\manifest.json
+
+Соберите и проверьте микросервис:
+
+go build -trimpath -o .\out\telesrv-update.exe .\cmd\telesrv-update
+
+.\out\telesrv-update.exe `
+  -manifest .\data\updates\manifest.json `
+  -files .\data\updates\files `
+  -check
+
+Ожидается: update catalog is valid
+
+Локальный запуск:
+
+.\out\telesrv-update.exe `
+  -listen 127.0.0.1:2402 `
+  -manifest .\data\updates\manifest.json `
+  -files .\data\updates\files
+
+Для production оформите процесс как Windows-сервис/supervisor с автоматическим
+перезапуском. Используйте рабочий каталог Gramsrv либо абсолютные пути.
+
+Переменные update-сервиса:
+
+TELESRV_UPDATE_LISTEN=127.0.0.1:2402
+TELESRV_UPDATE_MANIFEST=E:\projects\test-1\gramsrv\data\updates\manifest.json
+TELESRV_UPDATE_FILES_DIR=E:\projects\test-1\gramsrv\data\updates\files
+
+
+2. ПОДКЛЮЧЕНИЕ ОСНОВНОГО TELESRV
+--------------------------------
+
+TELESRV_UPDATE_PUBLIC_URL=https://updates.example.com
+TELESRV_UPDATE_SERVICE_URL=http://127.0.0.1:2402
+TELESRV_UPDATE_REQUEST_TIMEOUT=2s
+
+PUBLIC_URL передаётся TDesktop как autoupdate_url_prefix. Клиент обращается к
+https://updates.example.com/current4. SERVICE_URL используется основным telesrv
+для help.getAppUpdate и должен оставаться loopback/private URL.
+
+После первого изменения переменных перезапустите основной telesrv. При обычной
+публикации версии перезапускать сервисы не требуется: manifest перечитывается
+автоматически.
+
+
+3. REVERSE PROXY И HTTPS
+------------------------
+
+Публичный домен должен без изменения проксировать:
+
+/current, /current1, /current2, /current3, /current4, /files/*
+
+Обязательно:
+
+- HTTPS с валидным сертификатом;
+- порт 2402 доступен только локально/из внутренней сети;
+- proxy сохраняет GET, HEAD и Range;
+- proxy не модифицирует бинарные файлы;
+- для /current4 нет длительного CDN-кэша;
+- для /files/* допустим immutable-кэш;
+- directory listing отключён;
+- лимит и таймаут допускают скачивание полного пакета.
+
+Сервис выставляет no-cache для /current*, immutable для /files/*, ETag по
+SHA-256 и Accept-Ranges: bytes. HTTP endpoint для загрузки релизов отсутствует.
+
+
+4. ПРОВЕРКИ ПЕРЕД РЕЛИЗОМ
+-------------------------
+
+Set-Location E:\projects\tdesktop
+git status --short
+git submodule status --recursive
+git submodule foreach --recursive 'git status --short'
+Get-Content .\Telegram\build\version
+
+Убедитесь, что AppVersion больше опубликованного, submodules синхронизированы,
+ключ E:\projects\DesktopPrivate\update_private.pem доступен, а клиент/Packer
+используют соответствующий публичный ключ.
+
+
+5. СОБРАТЬ RELEASE-КЛИЕНТ И PACKER
+----------------------------------
+
+Из Git Bash:
+
+cd /e/projects/tdesktop
+
+"/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe" \
+  -S . -B out \
+  -DDESKTOP_APP_SPECIAL_TARGET=win64 \
+  -DDESKTOP_APP_DISABLE_AUTOUPDATE=OFF
+
+"/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe" \
+  --build out --config Release --target Packer --parallel
+
+"/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe" \
+  --build out --config Release --target Telegram --parallel
+
+Перед упаковкой должны существовать:
+
+E:\projects\tdesktop\out\Release\Packer.exe
+E:\projects\tdesktop\out\Release\Telegram.exe
+E:\projects\tdesktop\out\Release\Updater.exe
+E:\projects\tdesktop\out\Release\modules\x64\d3d\d3dcompiler_47.dll
+
+До публикации запустите Telegram.exe с тестовым профилем и проверьте основные
+экраны, авторизацию, Stars, Gifts, Premium и отсутствие crash/assert.
+
+
+6. СОЗДАТЬ ПОДПИСАННЫЙ WINDOWS X64 ПАКЕТ
+----------------------------------------
+
+Откройте PowerShell:
+
+Set-Location E:\projects\tdesktop\out\Release
+
+Не перезаписывайте существующий релиз:
+
+if (Test-Path -LiteralPath .\tx64upd7000009) {
+    throw 'Package already exists; use a new AppVersion'
+}
+
+Создайте пакет:
+
+.\Packer.exe `
+  -version 7000009 `
+  -path .\Telegram.exe `
+  -path .\Updater.exe `
+  -path .\modules\x64\d3d\d3dcompiler_47.dll `
+  -target win64
+
+Ожидаемый финал:
+
+Checking signature..
+Signature verified!
+Update file 'tx64upd7000009' written successfully!
+
+Без Signature verified! публиковать пакет нельзя. На сервер загружается именно
+tx64upd7000009, а не Telegram.exe, ZIP или установщик.
+
+
+7. РАССЧИТАТЬ SHA-256 И РАЗМЕР
+------------------------------
+
+$package = Get-Item -LiteralPath .\tx64upd7000009
+$packageHash = (Get-FileHash -LiteralPath $package.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+$packageSize = $package.Length
+
+[pscustomobject]@{
+    File = $package.Name
+    SHA256 = $packageHash
+    Size = $packageSize
+} | Format-List
+
+Сохраните SHA256 и Size: они вносятся в manifest без изменений.
+
+
+8. ЗАГРУЗИТЬ ПАКЕТ НА UPDATE-СЕРВЕР
+-----------------------------------
+
+Для локального Windows-сервера:
+
+$source = 'E:\projects\tdesktop\out\Release\tx64upd7000009'
+$filesDir = 'E:\projects\test-1\gramsrv\data\updates\files'
+$destination = Join-Path $filesDir 'tx64upd7000009'
+
+if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+    throw 'Source package does not exist'
+}
+if (Test-Path -LiteralPath $destination) {
+    throw 'Never overwrite a published package'
+}
+
+Copy-Item -LiteralPath $source -Destination $destination
+
+$sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+$destinationHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
+if ($sourceHash -ne $destinationHash) {
+    throw 'Uploaded package hash mismatch'
+}
+
+Для удалённого сервера сначала загрузите файл в закрытый incoming-каталог,
+проверьте SHA-256 на сервере и только потом переместите его в files.
+
+Новое уникальное имя можно заранее положить в files: пока активный manifest на
+него не ссылается, /files/tx64upd7000009 вернёт 404.
+
+
+9. ПОДГОТОВИТЬ НОВЫЙ MANIFEST
+-----------------------------
+
+Не редактируйте активный manifest.json напрямую.
+
+Set-Location E:\projects\test-1\gramsrv
+Copy-Item `
+  -LiteralPath .\data\updates\manifest.json `
+  -Destination .\data\updates\manifest.next.json
+
+Откройте manifest.next.json и обновите только нужную запись. Не удаляйте уже
+существующие Android/iOS и другие platform/channel записи.
+
+Пример Windows x64 stable 7.0.9:
+
+{
+  "schema_version": 1,
+  "desktop": {
+    "win64": {
+      "stable": {
+        "build": 7000009,
+        "version": "7.0.9",
+        "file": "tx64upd7000009",
+        "sha256": "ВСТАВЬТЕ_64_СИМВОЛА_SHA256",
+        "size": ВСТАВЬТЕ_РАЗМЕР_В_БАЙТАХ,
+        "disabled": false
+      }
+    }
+  }
+}
+
+Допустимые desktop platform:
+
+- win64 — Windows x64;
+- winarm — Windows ARM64;
+- win — Windows x86;
+- mac — macOS Intel;
+- armac — macOS Apple Silicon;
+- linux — Linux.
+
+Каналы: stable, beta и alpha.
+
+
+10. ПРОВЕРИТЬ MANIFEST ДО ПУБЛИКАЦИИ
+------------------------------------
+
+Set-Location E:\projects\test-1\gramsrv
+
+.\out\telesrv-update.exe `
+  -manifest .\data\updates\manifest.next.json `
+  -files .\data\updates\files `
+  -check
+
+Ожидается: update catalog is valid
+
+Проверяются JSON, schema_version, platform/channel, существование файла,
+его размер и SHA-256. При любой ошибке активный manifest не заменяйте.
+
+
+11. АТОМАРНО ОПУБЛИКОВАТЬ MANIFEST
+----------------------------------
+
+PowerShell-команда ниже заменяет manifest атомарно и сохраняет backup:
+
+$updateRoot = 'E:\projects\test-1\gramsrv\data\updates'
+$manifest = Join-Path $updateRoot 'manifest.json'
+$next = Join-Path $updateRoot 'manifest.next.json'
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$backup = Join-Path $updateRoot "manifest.$stamp.previous.json"
+
+if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+    throw 'Active manifest does not exist'
+}
+if (-not (Test-Path -LiteralPath $next -PathType Leaf)) {
+    throw 'Validated next manifest does not exist'
+}
+
+[System.IO.File]::Replace($next, $manifest, $backup, $true)
+
+Сервис перечитает manifest при следующем запросе. Перезапуск не нужен.
+
+Не сохраняйте активный JSON редактором по частям: промежуточный запрос может
+получить 503 catalog unavailable.
+
+
+12. ПРОВЕРИТЬ ЛОКАЛЬНЫЕ ENDPOINTS
+---------------------------------
+
+$localBase = 'http://127.0.0.1:2402'
+
+Invoke-RestMethod "$localBase/healthz"
+Invoke-RestMethod "$localBase/readyz"
+Invoke-RestMethod "$localBase/current4" | ConvertTo-Json -Depth 10
+
+Ожидаемая запись /current4:
+
+{
+  "win64": {
+    "stable": {
+      "released": 7000009,
+      "link": "/files/tx64upd7000009"
+    }
+  }
+}
+
+Проверьте HEAD:
+
+$head = Invoke-WebRequest `
+  -Method Head `
+  -Uri "$localBase/files/tx64upd7000009" `
+  -UseBasicParsing
+
+$head.StatusCode
+$head.Headers['Content-Length']
+$head.Headers['ETag']
+$head.Headers['Accept-Ranges']
+
+Ожидается StatusCode 200 и Accept-Ranges: bytes.
+
+Проверка Range:
+
+curl.exe -fSL `
+  --range 0-1023 `
+  -D - `
+  -o NUL `
+  http://127.0.0.1:2402/files/tx64upd7000009
+
+Ожидается HTTP 206 Partial Content и Content-Range.
+
+
+13. ПРОВЕРИТЬ ПУБЛИЧНЫЙ HTTPS
+-----------------------------
+
+$publicBase = 'https://updates.example.com'
+
+Invoke-RestMethod "$publicBase/readyz"
+Invoke-RestMethod "$publicBase/current4" | ConvertTo-Json -Depth 10
+
+curl.exe -fSL `
+  --range 0-1023 `
+  -D - `
+  -o NUL `
+  "$publicBase/files/tx64upd7000009"
+
+Полное скачивание и проверка SHA-256:
+
+$download = Join-Path $env:TEMP 'tx64upd7000009.download-test'
+if (Test-Path -LiteralPath $download) {
+    throw 'Test download path already exists'
+}
+
+curl.exe -fSL `
+  -o $download `
+  "$publicBase/files/tx64upd7000009"
+
+$downloadHash = (Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash.ToLowerInvariant()
+$downloadSize = (Get-Item -LiteralPath $download).Length
+
+[pscustomobject]@{
+    SHA256 = $downloadHash
+    Size = $downloadSize
+} | Format-List
+
+Сравните значения с manifest, затем удалите только тестовую копию:
+
+Remove-Item -LiteralPath $download
+
+
+14. ПРОВЕРИТЬ ОБНОВЛЕНИЕ В TDESKTOP
+-----------------------------------
+
+Нужен ранее установленный кастомный клиент, который:
+
+- содержит ваш публичный update key;
+- имеет AppVersion меньше 7000009;
+- получает правильный autoupdate_url_prefix;
+- находится в том же канале stable/beta/alpha.
+
+Проверьте:
+
+1. Клиент запрашивает /current4.
+2. Скачивает /files/tx64upd7000009 с Range-запросами.
+3. Принимает RSA-подпись.
+4. Показывает штатную зелёную плашку Update Telegram.
+5. После нажатия запускает Updater.
+6. Перезапускается с версией 7.0.9.
+7. Сохраняет пользовательские данные и сессию.
+
+Официальный клиент 7.0.6 не содержит ваш публичный ключ и не примет пакет.
+Первую кастомную сборку нужно установить вручную. Последующие версии смогут
+обновляться автоматически.
+
+
+15. BETA ПЕРЕД STABLE
+---------------------
+
+Для снижения риска сначала опубликуйте релиз в desktop.win64.beta и проверьте
+его на тестовых beta-клиентах. Затем добавьте/обновите desktop.win64.stable,
+снова выполните -check и атомарную замену manifest.
+
+Процентного rollout сейчас нет. Разделение выполняется по платформе и каналам
+stable, beta и alpha.
+
+
+16. ANDROID
+------------
+
+Пример apps.android.stable:
+
+"apps": {
+  "android": {
+    "stable": {
+      "id": 2026080701,
+      "version": "12.9.1",
+      "url": "https://updates.example.com/apps/telesrv-12.9.1.apk",
+      "url_by_source": {
+        "com.android.vending": "https://play.google.com/store/apps/details?id=your.application.id"
+      },
+      "can_not_skip": false,
+      "notes": {
+        "ru": "Доступна новая версия приложения.",
+        "en": "A new version is available."
+      },
+      "disabled": false
+    }
+  }
+}
+
+Условия:
+
+- APK подписан тем же Android application signing key, что установленная версия;
+- APK лежит на отдельном статическом HTTPS endpoint или в магазине;
+- telesrv-update сам не обслуживает /apps/*;
+- version больше версии клиента;
+- id положительный и уникальный;
+- notes содержит непустую локализацию;
+- для Play/Huawei используйте url_by_source;
+- can_not_skip включайте только после полной проверки доступности релиза.
+
+Проверка resolver:
+
+Invoke-RestMethod 'http://127.0.0.1:2402/v1/resolve?platform=android&channel=stable&version=12.9.0&source=&lang_code=ru'
+
+Если клиент имеет равную или более новую версию, ожидается HTTP 204 No Content.
+
+
+17. IOS
+-------
+
+Пример apps.ios.stable:
+
+"ios": {
+  "stable": {
+    "id": 2026080702,
+    "version": "12.9.1",
+    "url": "https://apps.apple.com/app/id0000000000",
+    "can_not_skip": false,
+    "notes": {
+      "ru": "В App Store доступна новая версия приложения.",
+      "en": "A new version is available in the App Store."
+    },
+    "disabled": false
+  }
+}
+
+iOS получает информацию через help.getAppUpdate, но установка выполняется через
+App Store, TestFlight или MDM. Обычный iOS-клиент не может самостоятельно
+заменить IPA по произвольной ссылке.
+
+Проверка resolver:
+
+Invoke-RestMethod 'http://127.0.0.1:2402/v1/resolve?platform=ios&channel=stable&version=12.9.0&source=&lang_code=ru'
+
+
+18. АВАРИЙНО ОСТАНОВИТЬ РАСПРОСТРАНЕНИЕ
+---------------------------------------
+
+Если обнаружена проблема:
+
+1. Скопируйте активный manifest в manifest.next.json.
+2. Установите disabled: true у проблемной записи.
+3. Выполните telesrv-update -check.
+4. Атомарно замените manifest.json.
+5. Убедитесь, что запись исчезла из /current4.
+
+Можно восстановить сохранённый предыдущий manifest, если старый пакет всё ещё
+находится в files.
+
+Не удаляйте пакет первым: активный manifest начнёт возвращать 503 из-за
+отсутствующего файла.
+
+Откат manifest на меньший build не понизит уже обновлённые клиенты. Если плохая
+версия установлена, исправьте ошибку, увеличьте AppVersion и опубликуйте новый
+подписанный релиз.
+
+
+19. ХРАНЕНИЕ СТАРЫХ РЕЛИЗОВ
+---------------------------
+
+Сохраняйте как минимум:
+
+- активный и предыдущий рабочий пакеты;
+- соответствующие manifest backups;
+- SHA-256 и release notes;
+- исходный Git commit/tag;
+- логи сборки с Signature verified!.
+
+Удаляйте старый файл только когда ни один rollback manifest на него не ссылается
+и завершились ожидаемые скачивания/CDN-кэш.
+
+
+20. ДИАГНОСТИКА
+---------------
+
+/healthz возвращает 200, когда HTTP-процесс работает.
+
+/readyz возвращает 200, когда manifest и все включённые desktop-пакеты проходят
+проверку. При некорректном manifest ожидается 503.
+
+/current4 возвращает опубликованные desktop-релизы. disabled: true скрывает
+запись.
+
+/files/<имя> отдаёт только файл из текущего проверенного каталога. Просто
+скопированный, но ещё не опубликованный файл возвращает 404.
+
+Типичные проблемы:
+
+- 404 /files/... — имя отсутствует в manifest или запись disabled;
+- 503 catalog unavailable — ошибка JSON, SHA-256, размера или отсутствует файл;
+- 503 package changed — опубликованный файл заменили после загрузки manifest;
+- клиент не видит релиз — released не больше AppVersion или неверный канал;
+- клиент отверг пакет — публичный ключ клиента не соответствует ключу Packer;
+- нет зелёной плашки — пакет не проверен или Updater отключён при сборке;
+- Range возвращает 200 вместо 206 — reverse proxy не передаёт Range;
+- Android/iOS No Content — version не больше клиентской, не совпадает канал
+  либо запись disabled.
+
+
+21. КОНТРОЛЬНЫЙ ЧЕК-ЛИСТ
+------------------------
+
+[ ] Новый AppVersion строго больше текущего.
+[ ] Git commit/tag релиза зафиксирован.
+[ ] Submodules соответствуют основному репозиторию.
+[ ] Release-клиент протестирован.
+[ ] Packer собран с правильным приватным ключом.
+[ ] Клиент содержит соответствующий публичный ключ.
+[ ] Packer вывел Signature verified!.
+[ ] Пакет имеет уникальное имя tx64upd<build>.
+[ ] SHA-256 и размер рассчитаны после упаковки.
+[ ] Файл загружен без перезаписи существующего пакета.
+[ ] SHA-256 исходного и серверного файла совпадает.
+[ ] manifest.next.json сохраняет остальные platform/channel записи.
+[ ] manifest.next.json прошёл telesrv-update -check.
+[ ] manifest.json заменён атомарно с backup.
+[ ] /healthz и /readyz возвращают 200.
+[ ] /current4 содержит правильные released и link.
+[ ] HEAD возвращает размер, ETag и Accept-Ranges.
+[ ] Range-запрос возвращает 206.
+[ ] Публично скачанный файл имеет правильный SHA-256.
+[ ] Тестовый клиент успешно обновился и перезапустился.
+[ ] Старый пакет и предыдущий manifest сохранены для аварийного отката.
+
+
+КРАТКАЯ ПАМЯТКА ДЛЯ КАЖДОГО WINDOWS-РЕЛИЗА
+------------------------------------------
+
+1. Собрать Telegram, Updater и Packer.
+2. Запустить Packer с новым AppVersion.
+3. Проверить Signature verified!.
+4. Рассчитать SHA-256 и размер.
+5. Скопировать новый пакет в data\updates\files.
+6. Подготовить manifest.next.json.
+7. Выполнить telesrv-update.exe -check.
+8. Атомарно заменить manifest.json.
+9. Проверить /readyz, /current4, HEAD, Range и SHA-256.
+10. Проверить реальное обновление на старом кастомном клиенте.

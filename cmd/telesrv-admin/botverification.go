@@ -500,6 +500,35 @@ func (s *server) handleRevokeCustomVerificationAPI(w http.ResponseWriter, r *htt
 	writeBotVerificationResultAPI(w, result, status, err)
 }
 
+type grantCustomVerificationAPIRequest struct {
+	CommandID     string    `json:"command_id"`
+	Reason        string    `json:"reason"`
+	Confirm       bool      `json:"confirm"`
+	VerifierBotID flexInt64 `json:"verifier_bot_id"`
+	PeerType      string    `json:"peer_type"`
+	PeerID        flexInt64 `json:"peer_id"`
+	Description   string    `json:"description"`
+}
+
+func (s *server) handleGrantCustomVerificationAPI(w http.ResponseWriter, r *http.Request) {
+	var body grantCustomVerificationAPIRequest
+	if !decodeAction(w, r, &body) {
+		return
+	}
+	peerType := domain.PeerType(strings.TrimSpace(body.PeerType))
+	if body.VerifierBotID.Int64() <= 0 || body.PeerID.Int64() <= 0 || (peerType != domain.PeerTypeUser && peerType != domain.PeerTypeChannel) {
+		writeAPIError(w, http.StatusBadRequest, "invalid verifier or peer")
+		return
+	}
+	req := admin.GrantCustomVerificationRequest{
+		CommandMeta:   s.commandMetaFromAPI(r, body.CommandID, body.Reason, body.Confirm, "grant-custom-verification"),
+		VerifierBotID: body.VerifierBotID.Int64(), PeerType: peerType, PeerID: body.PeerID.Int64(),
+		Description: strings.TrimSpace(body.Description),
+	}
+	result, status, err := s.callAdminCommand(r.Context(), "/v1/botverification/grant-mark", req)
+	writeBotVerificationResultAPI(w, result, status, err)
+}
+
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------

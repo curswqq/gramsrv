@@ -214,9 +214,12 @@ func (s *StarGiftStore) publishCollectibleRevisionLocked(write domain.StarGiftCo
 		return domain.StarGiftCollectibleRevision{}, domain.ErrStarGiftNotFound
 	}
 	previous := s.collectibles[write.GiftID]
+	if write.SupplyTotal < previous.Issued {
+		return domain.StarGiftCollectibleRevision{}, domain.ErrStarGiftCollectibleInvalid
+	}
 	revision := domain.StarGiftCollectibleRevision{
 		ID: previous.ID + 1, GiftID: write.GiftID, Revision: previous.Revision + 1,
-		UpgradeStars: write.UpgradeStars, SupplyTotal: write.SupplyTotal,
+		UpgradeStars: write.UpgradeStars, SupplyTotal: write.SupplyTotal, Issued: previous.Issued,
 		SlugPrefix: strings.ToLower(strings.TrimSpace(write.SlugPrefix)), Published: true,
 		CreatedBy:      write.Actor,
 		OfficialGiftID: write.OfficialGiftID, SourceManifestSHA256: append([]byte(nil), write.SourceManifestSHA256...),
@@ -412,7 +415,7 @@ func (s *StarGiftStore) ListByOwnerFiltered(_ context.Context, filter domain.Sav
 		upgradable := false
 		if g.UniqueGiftID == 0 {
 			if gift, ok := s.catalog[g.GiftID]; ok {
-				upgradable = gift.UpgradeStars > 0 && gift.UpgradeIssued < gift.UpgradeTotal
+				upgradable = gift.CollectibleUpgradeAvailable()
 			}
 		}
 		if filter.ExcludeUpgradable && upgradable {

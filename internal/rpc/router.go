@@ -85,6 +85,9 @@ type Config struct {
 	RtmpIngestURL string
 	// PublicBaseURL 是所有客户端可见 telesrv 链接的公开根 URL。
 	PublicBaseURL string
+	// DevStarsPurchaseBlocked disables every local fiat Stars top-up, friend
+	// gift and giveaway checkout while preserving existing Stars balances.
+	DevStarsPurchaseBlocked bool
 	// UpdatePublicURL is advertised as help.getConfig.autoupdate_url_prefix.
 	// Empty keeps the native desktop updater disabled.
 	UpdatePublicURL string

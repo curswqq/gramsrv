@@ -72,6 +72,18 @@ func (s *Service) Credit(ctx context.Context, userID, amount int64, reason domai
 	return s.store.Credit(ctx, userID, amount, reason, peer, int(s.now().Unix()), title, desc)
 }
 
+type bulkCreditStore interface {
+	CreditAllUsers(context.Context, int64, domain.StarsTransactionReason, int, string, string, string) ([]domain.StarsBalance, bool, int, error)
+}
+
+func (s *Service) CreditAllUsers(ctx context.Context, amount int64, reason domain.StarsTransactionReason, title, desc, commandKey string) ([]domain.StarsBalance, bool, int, error) {
+	bulk, ok := s.store.(bulkCreditStore)
+	if !ok || amount <= 0 {
+		return nil, false, 0, domain.ErrStarsInvalidAmount
+	}
+	return bulk.CreditAllUsers(ctx, amount, reason, int(s.now().Unix()), title, desc, commandKey)
+}
+
 // Debit 从账号扣款（amount>0），余额不足返回 domain.ErrStarsInsufficient。
 // 先确保起始授予已应用，避免新账号在尚未首读余额前借记被误判余额不足。
 func (s *Service) Debit(ctx context.Context, userID, amount int64, reason domain.StarsTransactionReason, peer domain.Peer, title, desc string) (domain.StarsBalance, error) {

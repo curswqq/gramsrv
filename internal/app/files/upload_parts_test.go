@@ -77,6 +77,32 @@ func TestSaveFilePartQuotaRejectsPartAndByteOverLimit(t *testing.T) {
 	}
 }
 
+func TestAssembledUploadRejectsSingleFileOverConfiguredLimit(t *testing.T) {
+	ctx := context.Background()
+	media := newFakeMediaStore()
+	blobs, err := NewLocalFS(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFS: %v", err)
+	}
+	svc := NewService(media, blobs, 2,
+		WithVideoThumbnailer(nil),
+		WithUploadMaxFileBytes(7),
+	)
+	if _, err := svc.SaveFilePart(ctx, 10, 102, 0, []byte("1234")); err != nil {
+		t.Fatalf("save first part: %v", err)
+	}
+	if _, err := svc.SaveFilePart(ctx, 10, 102, 1, []byte("5678")); err != nil {
+		t.Fatalf("save second part: %v", err)
+	}
+	_, err = svc.CreateDocumentFromUpload(ctx,
+		domain.UploadedFileRef{OwnerUserID: 10, FileID: 102, Parts: 2, Name: "too-large.bin"},
+		domain.DocumentSpec{MimeType: "application/octet-stream"},
+	)
+	if !errors.Is(err, domain.ErrFileTooBig) {
+		t.Fatalf("create oversized document err = %v, want ErrFileTooBig", err)
+	}
+}
+
 func TestCreateDocumentFromUploadStreamsBodyAndCleansParts(t *testing.T) {
 	ctx := context.Background()
 	media := newFakeMediaStore()

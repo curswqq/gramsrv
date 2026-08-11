@@ -122,6 +122,69 @@ func TestMessageStoreSendPrivateTextRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMessageStorePaidPrivateMessageIsAtomicAndIdempotent(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	suffix := randomSuffix(t)
+	users := NewUserStore(pool)
+	sender, err := users.Create(ctx, domain.User{AccessHash: 71, Phone: "+1677" + suffix + "01", FirstName: "PaidSender"})
+	if err != nil {
+		t.Fatalf("create sender: %v", err)
+	}
+	recipient, err := users.Create(ctx, domain.User{AccessHash: 72, Phone: "+1677" + suffix + "02", FirstName: "PaidRecipient"})
+	if err != nil {
+		t.Fatalf("create recipient: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, "DELETE FROM users WHERE id = ANY($1::bigint[])", []int64{sender.ID, recipient.ID})
+	})
+	if _, _, err := NewStarsStore(pool).EnsureGrant(ctx, sender.ID, 20, 1700000900); err != nil {
+		t.Fatalf("grant sender: %v", err)
+	}
+
+	req := domain.SendPrivateTextRequest{
+		SenderUserID: sender.ID, RecipientUserID: recipient.ID,
+		RandomID: 99001, Message: "paid hello", Date: 1700000901,
+		PaidMessageStars: 10,
+	}
+	messages := NewMessageStore(pool)
+	first, err := messages.SendPrivateText(ctx, req)
+	if err != nil {
+		t.Fatalf("paid send: %v", err)
+	}
+	if first.SenderMessage.PaidMessageStars != 10 || first.RecipientMessage.PaidMessageStars != 10 ||
+		first.SenderStarsBalance == nil || first.SenderStarsBalance.Balance != 10 ||
+		first.RecipientStarsBalance == nil || first.RecipientStarsBalance.Balance != 8 {
+		t.Fatalf("paid result = %+v sender=%+v recipient=%+v", first.SenderMessage, first.SenderStarsBalance, first.RecipientStarsBalance)
+	}
+
+	replay, err := messages.SendPrivateText(ctx, req)
+	if err != nil || !replay.Duplicate || replay.SenderMessage.ID != first.SenderMessage.ID {
+		t.Fatalf("paid replay = %+v err=%v", replay, err)
+	}
+	var senderBalance, recipientBalance, senderDebits, recipientCredits int64
+	if err := pool.QueryRow(ctx, "SELECT balance FROM stars_balances WHERE user_id=$1", sender.ID).Scan(&senderBalance); err != nil {
+		t.Fatalf("sender balance: %v", err)
+	}
+	if err := pool.QueryRow(ctx, "SELECT balance FROM stars_balances WHERE user_id=$1", recipient.ID).Scan(&recipientBalance); err != nil {
+		t.Fatalf("recipient balance: %v", err)
+	}
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM stars_transactions WHERE user_id=$1 AND reason='paid_message' AND amount=-10", sender.ID).Scan(&senderDebits); err != nil {
+		t.Fatalf("sender transactions: %v", err)
+	}
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM stars_transactions WHERE user_id=$1 AND reason='paid_message' AND amount=8", recipient.ID).Scan(&recipientCredits); err != nil {
+		t.Fatalf("recipient transactions: %v", err)
+	}
+	if senderBalance != 10 || recipientBalance != 8 || senderDebits != 1 || recipientCredits != 1 {
+		t.Fatalf("ledger after replay = balances %d/%d txns %d/%d", senderBalance, recipientBalance, senderDebits, recipientCredits)
+	}
+
+	history, err := messages.ListByUser(ctx, recipient.ID, domain.MessageFilter{HasPeer: true, Peer: domain.Peer{Type: domain.PeerTypeUser, ID: sender.ID}, Limit: 10})
+	if err != nil || len(history.Messages) != 1 || history.Messages[0].PaidMessageStars != 10 {
+		t.Fatalf("recipient paid history = %+v err=%v", history.Messages, err)
+	}
+}
+
 func TestMessageStoreWebViewDataServiceActionRoundTrip(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()

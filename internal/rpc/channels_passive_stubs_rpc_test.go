@@ -537,6 +537,16 @@ func TestTDesktopPassiveChannelStubs(t *testing.T) {
 			ActiveTimeInViewMs:            10,
 			HeightToViewportRatioPermille: 1000,
 			SeenRangeRatioPermille:        1000,
+		}, {
+			// Official Android clients may report multiple view samples for the
+			// same message in one batch. The durable event keeps both samples but
+			// de-duplicates the subject-id index.
+			MsgID:                         1,
+			ViewID:                        100,
+			TimeInViewMs:                  20,
+			ActiveTimeInViewMs:            15,
+			HeightToViewportRatioPermille: 1000,
+			SeenRangeRatioPermille:        1000,
 		}},
 	}); err != nil || !ok {
 		t.Fatalf("messages.reportReadMetrics = ok %v err %v, want true nil", ok, err)
@@ -544,6 +554,7 @@ func TestTDesktopPassiveChannelStubs(t *testing.T) {
 	if events := telemetryEvents.Events(); len(events) != 2 ||
 		events[0].Kind != domain.ClientTelemetryMessageDelivery ||
 		events[1].Kind != domain.ClientTelemetryReadMetrics ||
+		len(events[1].SubjectIDs) != 1 ||
 		len(moderationReports.Reports()) != 2 {
 		t.Fatalf("telemetry=%+v moderation=%+v, want separate durable streams",
 			events, moderationReports.Reports())

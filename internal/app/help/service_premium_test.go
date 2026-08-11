@@ -17,11 +17,12 @@ func TestAppConfigPremiumKeys(t *testing.T) {
 	if err != nil || notModified {
 		t.Fatalf("GetAppConfig = notModified %v err %v", notModified, err)
 	}
-	if cfg.Hash != defaultAppConfigHash || cfg.Hash < 10 {
+	wantHash := defaultAppConfigHashFor("")
+	if cfg.Hash != wantHash || cfg.Hash < 10 {
 		t.Fatalf("hash = %d, want defaultAppConfigHash(≥10)", cfg.Hash)
 	}
 	oldCfg, oldNotModified, err := (*Service)(nil).GetAppConfig(context.Background(), 0, defaultAppConfigHash-1)
-	if err != nil || oldNotModified || oldCfg.Hash != defaultAppConfigHash {
+	if err != nil || oldNotModified || oldCfg.Hash != wantHash {
 		t.Fatalf("GetAppConfig(old hash) = hash %d notModified %v err %v, want refreshed config", oldCfg.Hash, oldNotModified, err)
 	}
 	var decoded map[string]any
@@ -44,14 +45,17 @@ func TestAppConfigPremiumKeys(t *testing.T) {
 	}
 	// DrKLO 缺省 starsLocked=true；缺 key 时余额不足送礼会误弹「所在国家无法购买星星」。
 	if blocked, ok := decoded["stars_purchase_blocked"].(bool); !ok || blocked {
-		t.Fatalf("stars_purchase_blocked = %v, want false (DrKLO starsPurchaseAvailable 据此解锁充值入口)", decoded["stars_purchase_blocked"])
+		t.Fatalf("stars_purchase_blocked = %v, want false so Stars balance/settings remain visible", decoded["stars_purchase_blocked"])
+	}
+	if available, ok := decoded["stars_paid_messages_available"].(bool); !ok || !available {
+		t.Fatalf("stars_paid_messages_available = %v, want true so Privacy > Charge for messages is visible", decoded["stars_paid_messages_available"])
 	}
 	// DrKLO 缺省 stargiftsBlocked=true 会隐藏 star gift 送礼网格，必须显式下发 false。
 	if blocked, ok := decoded["stargifts_blocked"].(bool); !ok || blocked {
 		t.Fatalf("stargifts_blocked = %v, want false (DrKLO GiftSheet 据此隐藏礼物网格)", decoded["stargifts_blocked"])
 	}
-	if available, ok := decoded["giveaway_gifts_purchase_available"].(bool); !ok || !available {
-		t.Fatalf("giveaway_gifts_purchase_available = %v, want true", decoded["giveaway_gifts_purchase_available"])
+	if available, ok := decoded["giveaway_gifts_purchase_available"].(bool); !ok || available {
+		t.Fatalf("giveaway_gifts_purchase_available = %v, want false while the dev provider is disabled", decoded["giveaway_gifts_purchase_available"])
 	}
 	directCurrencies, ok := decoded["premium_playmarket_direct_currency_list"].([]any)
 	if !ok || len(directCurrencies) == 0 || !containsJSONCurrency(directCurrencies, "USD") {

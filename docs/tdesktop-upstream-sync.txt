@@ -1,0 +1,342 @@
+СИНХРОНИЗАЦИЯ КАСТОМНОГО TDESKTOP С ОФИЦИАЛЬНЫМ РЕПОЗИТОРИЕМ
+================================================================
+
+Актуально для локального проекта:
+E:\projects\tdesktop
+
+Исходное состояние на момент составления инструкции:
+- локальная ветка dev основана на TDesktop 7.0.6;
+- официальный репозиторий используется как источник свежего кода;
+- присутствуют локальные изменения функционала Stars/Gifts;
+- в клиент и Packer встроен собственный публичный ключ обновлений;
+- приватные ключи хранятся отдельно в E:\projects\DesktopPrivate;
+- используются Git submodules, включая вложенные подмодули.
+
+ВАЖНО
+------
+
+Не выполняйте обычный git pull в грязной ветке dev. Сначала сохраните
+локальные изменения в отдельной ветке и коммитах, затем перенесите их
+поверх свежей upstream/dev через rebase.
+
+Не используйте git submodule update --remote. Такая команда переключает
+подмодули на произвольные последние версии их веток, тогда как TDesktop
+должен собираться с конкретными ревизиями, записанными в основном репозитории.
+
+
+1. СОХРАНИТЬ КЛЮЧИ ОБНОВЛЕНИЙ
+-----------------------------
+
+Сделайте защищённую резервную копию каталога:
+
+E:\projects\DesktopPrivate
+
+Особенно важен файл:
+
+E:\projects\DesktopPrivate\update_private.pem
+
+Этот приватный ключ нельзя добавлять в Git, отправлять в GitHub или передавать
+третьим лицам. Без него невозможно подписывать будущие обновления тем же ключом.
+
+
+2. УДАЛИТЬ СЛУЧАЙНЫЙ ФАЙЛ ИЗ КОРНЯ TDESKTOP
+--------------------------------------------
+
+В корне проекта был обнаружен файл с именем, начинающимся на etShowText.
+Это случайно сохранённый цветной вывод поиска, а не исходный код.
+
+Выполните из Git Bash:
+
+powershell.exe -NoProfile -Command '$f = @(Get-ChildItem -LiteralPath "E:\projects\tdesktop" -Force | Where-Object { $_.Name -like "etShowText*" }); if ($f.Count -ne 1 -or $f[0].Length -ne 3178) { throw "Unexpected artifact" }; Remove-Item -LiteralPath $f[0].FullName'
+
+Проверьте состояние:
+
+cd /e/projects/tdesktop
+git status --short
+
+Не используйте git add . до проверки списка файлов.
+
+
+3. ПРОВЕРИТЬ ИЗМЕНЕНИЯ В SUBMODULES
+-----------------------------------
+
+Перед синхронизацией убедитесь, что внутри подмодулей нет незакоммиченных
+изменений:
+
+git submodule foreach --recursive 'git status --short'
+
+Если команда не выводит изменённые файлы, подмодули чистые.
+
+Если внутри какого-либо подмодуля есть изменения, остановитесь. Их нужно
+отдельно закоммитить в собственной ветке соответствующего подмодуля либо
+сохранить вручную. Не запускайте submodule update, пока такие изменения
+не сохранены.
+
+
+4. СОЗДАТЬ ОТДЕЛЬНУЮ ВЕТКУ
+--------------------------
+
+cd /e/projects/tdesktop
+git switch -c custom/dev
+
+Не продолжайте разработку непосредственно в официальной ветке dev.
+
+
+5. ЗАФИКСИРОВАТЬ ТЕКУЩИЕ ИЗМЕНЕНИЯ
+----------------------------------
+
+Сначала добавьте изменения функционала:
+
+git add \
+  Telegram/SourceFiles/boxes/gift_credits_box.cpp \
+  Telegram/SourceFiles/boxes/star_gift_craft_animation.cpp \
+  Telegram/SourceFiles/mtproto/mtproto_dc_options.cpp
+
+git diff --cached --stat
+git diff --cached --check
+git commit -m "Implement custom Stars and gift functionality"
+
+Отдельно сохраните публичную часть системы подписи обновлений:
+
+git add \
+  Telegram/SourceFiles/config.h \
+  Telegram/SourceFiles/_other/packer.cpp
+
+git diff --cached --stat
+git diff --cached --check
+git commit -m "Configure custom desktop update signing"
+
+Проверьте состояние основного репозитория:
+
+git status
+git diff --check
+
+Каталог E:\projects\DesktopPrivate находится вне репозитория TDesktop и
+не должен появляться в git status.
+
+
+6. НАСТРОИТЬ FORK И UPSTREAM
+----------------------------
+
+Сейчас remote origin может указывать прямо на официальный репозиторий:
+
+https://github.com/telegramdesktop/tdesktop.git
+
+Для хранения собственной версии рекомендуется создать fork репозитория
+telegramdesktop/tdesktop в своём GitHub-аккаунте.
+
+После создания fork выполните:
+
+git remote rename origin upstream
+git remote add origin https://github.com/USERNAME/tdesktop.git
+git remote -v
+
+Замените USERNAME на свой GitHub-логин.
+
+Ожидаемая схема:
+
+origin    -> ваш fork;
+upstream  -> https://github.com/telegramdesktop/tdesktop.git
+
+Если fork пока не нужен, переименование можно пропустить. В таком случае
+в дальнейших командах используйте origin/dev вместо upstream/dev.
+
+
+7. ЗАГРУЗИТЬ СВЕЖИЙ ОФИЦИАЛЬНЫЙ КОД И ДАННЫЕ SUBMODULES
+-------------------------------------------------------
+
+При настроенной схеме origin/upstream выполните:
+
+git fetch upstream --prune --recurse-submodules=on-demand
+git fetch origin --prune --recurse-submodules=on-demand
+
+Параметр --recurse-submodules=on-demand загружает объекты подмодулей,
+необходимые новым коммитам основного репозитория. Он ещё не переключает
+рабочие каталоги подмодулей.
+
+Посмотреть входящие официальные коммиты:
+
+git log --oneline HEAD..upstream/dev
+
+
+8. ПЕРЕНЕСТИ СВОИ КОММИТЫ ПОВЕРХ СВЕЖЕЙ UPSTREAM/DEV
+----------------------------------------------------
+
+git rebase upstream/dev
+
+Если появились конфликты:
+
+git status
+
+Откройте конфликтующие файлы, удалите маркеры конфликта и сохраните нужную
+логику. Затем для каждого исправленного файла выполните:
+
+git add путь/к/исправленному/файлу
+git rebase --continue
+
+Повторяйте до завершения rebase.
+
+Если нужно полностью отменить перенос:
+
+git rebase --abort
+
+При конфликте в следующих файлах необходимо сохранить собственный публичный
+ключ обновлений:
+
+Telegram/SourceFiles/config.h
+Telegram/SourceFiles/_other/packer.cpp
+
+Приватный ключ при rebase не затрагивается, поскольку хранится вне репозитория.
+
+
+9. СИНХРОНИЗИРОВАТЬ И ОБНОВИТЬ SUBMODULES
+-----------------------------------------
+
+После успешного rebase выполните:
+
+git submodule sync --recursive
+git submodule update --init --recursive --jobs 8
+
+Назначение команд:
+
+- sync обновляет URL подмодулей из актуального файла .gitmodules;
+- update загружает и переключает каждый подмодуль на конкретный коммит,
+  зафиксированный свежим TDesktop;
+- --init подключает новые подмодули, которые могли появиться в upstream;
+- --recursive обрабатывает вложенные подмодули;
+- --jobs 8 ускоряет параллельную загрузку.
+
+Не добавляйте параметр --remote.
+
+После обновления проверьте состояние:
+
+git status --short
+git submodule status --recursive
+git submodule foreach --recursive 'git status --short'
+
+Нормально, если git submodule status показывает хеши коммитов. Ненормально,
+если git status сообщает о modified content или untracked content внутри
+подмодуля без ожидаемой причины.
+
+
+10. ПЕРЕСОЗДАТЬ CMAKE-КОНФИГУРАЦИЮ
+----------------------------------
+
+Выполните из Git Bash:
+
+cd /e/projects/tdesktop
+
+"/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe" \
+  -S . \
+  -B out \
+  -DDESKTOP_APP_SPECIAL_TARGET=win64 \
+  -DDESKTOP_APP_DISABLE_AUTOUPDATE=OFF
+
+Флаг DESKTOP_APP_SPECIAL_TARGET=win64 включает Packer для Windows x64.
+Флаг DESKTOP_APP_DISABLE_AUTOUPDATE=OFF включает Updater и клиентскую
+поддержку автообновлений.
+
+
+11. СОБРАТЬ PACKER И КЛИЕНТ
+---------------------------
+
+Сначала соберите Packer:
+
+"/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe" \
+  --build out \
+  --config Release \
+  --target Packer \
+  --parallel
+
+Затем соберите клиент:
+
+"/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe" \
+  --build out \
+  --config Release \
+  --target Telegram \
+  --parallel
+
+Ожидаемые файлы:
+
+E:\projects\tdesktop\out\Release\Packer.exe
+E:\projects\tdesktop\out\Release\Telegram.exe
+E:\projects\tdesktop\out\Release\Updater.exe
+
+Проверьте актуальную версию в:
+
+E:\projects\tdesktop\Telegram\build\version
+
+Не подменяйте номер версии только переименованием файлов. Версия пакета,
+передаваемая Packer, должна соответствовать версии собранного клиента.
+
+
+12. ПРОВЕРИТЬ РЕЗУЛЬТАТ
+-----------------------
+
+git status --short
+git log --oneline --decorate -10
+git diff upstream/dev...HEAD --stat
+git diff upstream/dev...HEAD --check
+
+Дополнительно запустите собранный клиент в тестовом профиле и проверьте:
+
+- запуск и авторизацию;
+- Stars и Gifts;
+- Premium;
+- загрузку списка обновлений;
+- запуск Updater;
+- создание Packer-пакета с сообщением Signature verified!.
+
+
+13. ОТПРАВИТЬ СОБСТВЕННУЮ ВЕТКУ В FORK
+---------------------------------------
+
+git push -u origin custom/dev
+
+Не создавайте Pull Request с кастомным публичным ключом в официальный
+telegramdesktop/tdesktop. Этот ключ относится к вашей инфраструктуре и
+должен находиться только в вашем custom fork.
+
+
+14. ПОСЛЕДУЮЩИЕ СИНХРОНИЗАЦИИ
+-----------------------------
+
+Перед каждой следующей синхронизацией убедитесь, что основной репозиторий
+и все подмодули не содержат несохранённых изменений:
+
+cd /e/projects/tdesktop
+git switch custom/dev
+git status --short
+git submodule foreach --recursive 'git status --short'
+
+Затем выполните:
+
+git fetch upstream --prune --recurse-submodules=on-demand
+git rebase upstream/dev
+git submodule sync --recursive
+git submodule update --init --recursive --jobs 8
+
+После проверки и сборки отправьте обновлённую ветку:
+
+git push --force-with-lease origin custom/dev
+
+Используйте --force-with-lease только для своей ветки после rebase. Не
+применяйте обычный --force и не переписывайте общую ветку, которой пользуются
+другие разработчики.
+
+
+15. ПЕРВЫЙ ПЕРЕХОД НА СОБСТВЕННЫЕ ОБНОВЛЕНИЯ
+--------------------------------------------
+
+Старый официальный клиент 7.0.6 содержит официальный публичный ключ и не
+примет update-пакет, подписанный вашим приватным ключом.
+
+Первую сборку кастомного клиента с новым публичным ключом необходимо один
+раз установить вручную. После этого последующие версии смогут проверять и
+устанавливать пакеты, подписанные ключом из:
+
+E:\projects\DesktopPrivate\update_private.pem
+
+Перед публикацией каждой новой версии обязательно проверяйте, что Packer
+выводит Signature verified! и что update-сервис отдаёт пакет для правильной
+платформы и версии.

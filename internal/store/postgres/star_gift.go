@@ -34,7 +34,7 @@ SELECT c.gift_id, r.id, r.stars, r.convert_stars, r.title,
        r.background_center_color IS NOT NULL,
        COALESCE(r.background_center_color, 0), COALESCE(r.background_edge_color, 0),
        COALESCE(r.background_text_color, 0),
-       COALESCE(cr.upgrade_stars, 0), COALESCE(cr.supply_total, 0), COALESCE(cr.issued, 0),
+       COALESCE(cr.upgrade_stars, 0), COALESCE(cr.supply_total, 0), COALESCE(cr.issued + cr.reserved, 0),
        d.id, d.access_hash, d.file_reference, d.date, d.mime_type, d.size, d.dc_id,
        d.attributes::text, d.thumbs::text
 FROM star_gift_catalog c
@@ -95,7 +95,7 @@ SELECT r.gift_id, r.id, r.stars, r.convert_stars, r.title,
        r.background_center_color IS NOT NULL,
        COALESCE(r.background_center_color, 0), COALESCE(r.background_edge_color, 0),
        COALESCE(r.background_text_color, 0),
-       COALESCE(cr.upgrade_stars, 0), COALESCE(cr.supply_total, 0), COALESCE(cr.issued, 0),
+       COALESCE(cr.upgrade_stars, 0), COALESCE(cr.supply_total, 0), COALESCE(cr.issued + cr.reserved, 0),
        d.id, d.access_hash, d.file_reference, d.date, d.mime_type, d.size, d.dc_id,
        d.attributes::text, d.thumbs::text
 FROM star_gift_catalog_revisions r
@@ -395,7 +395,7 @@ SELECT c.gift_id, r.id, r.stars, r.convert_stars, r.title,
        r.background_center_color IS NOT NULL,
        COALESCE(r.background_center_color, 0), COALESCE(r.background_edge_color, 0),
        COALESCE(r.background_text_color, 0),
-       COALESCE(cr.upgrade_stars, 0), COALESCE(cr.supply_total, 0), COALESCE(cr.issued, 0),
+       COALESCE(cr.upgrade_stars, 0), COALESCE(cr.supply_total, 0), COALESCE(cr.issued + cr.reserved, 0),
        d.id, d.access_hash, d.file_reference, d.date, d.mime_type, d.size, d.dc_id,
        d.attributes::text, d.thumbs::text,
        c.enabled, c.sort_order, r.revision, r.source_name, r.source_format,
@@ -464,7 +464,24 @@ func (s *StarGiftStore) Create(ctx context.Context, gift domain.SavedStarGift) (
 		return 0, domain.ErrStarGiftInvalid
 	}
 	var id int64
-	err = s.db.QueryRow(ctx, `
+	create := func(db sqlcgen.DBTX) error {
+		reservationRevisionID := int64(0)
+		if gift.UniqueGiftID == 0 && !gift.Converted {
+			var issued, reserved, supply int
+			err := db.QueryRow(ctx, `
+SELECT r.id, r.issued, r.reserved, r.supply_total
+FROM star_gift_catalog c
+JOIN star_gift_collectible_revisions r ON r.id=c.collectible_revision_id
+WHERE c.gift_id=$1 AND r.status='published'
+FOR UPDATE OF c, r`, gift.GiftID).Scan(&reservationRevisionID, &issued, &reserved, &supply)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("lock collectible release for saved gift: %w", err)
+			}
+			if err == nil && issued+reserved >= supply {
+				return domain.ErrStarGiftCollectibleSoldOut
+			}
+		}
+		if err := db.QueryRow(ctx, `
 WITH next_id AS (
     SELECT nextval(pg_get_serial_sequence('public.peer_star_gifts', 'id'))::bigint AS id
 )
@@ -474,8 +491,24 @@ SELECT next_id.id, $1,$2,$3,$4,$5,$6,
        $8,$9,$10,false,$11,$12,$13,$14,$15,$16
 FROM next_id
 RETURNING id`,
-		string(gift.Owner.Type), gift.Owner.ID, gift.FromUserID, gift.GiftID, gift.RevisionID, gift.MsgID, gift.SavedID, gift.Date,
-		gift.NameHidden, gift.Unsaved, gift.ConvertStars, gift.PrepaidUpgradeStars, gift.PrepaidUpgradeHash, gift.GiftNum, gift.Message, entitiesJSON).Scan(&id)
+			string(gift.Owner.Type), gift.Owner.ID, gift.FromUserID, gift.GiftID, gift.RevisionID, gift.MsgID, gift.SavedID, gift.Date,
+			gift.NameHidden, gift.Unsaved, gift.ConvertStars, gift.PrepaidUpgradeStars, gift.PrepaidUpgradeHash, gift.GiftNum, gift.Message, entitiesJSON).Scan(&id); err != nil {
+			return fmt.Errorf("create star gift: %w", err)
+		}
+		if reservationRevisionID > 0 {
+			if _, err := db.Exec(ctx, `
+INSERT INTO star_gift_collectible_reservations(saved_gift_id, collectible_revision_id)
+VALUES($1,$2)`, id, reservationRevisionID); err != nil {
+				return fmt.Errorf("reserve saved gift collectible: %w", err)
+			}
+		}
+		return nil
+	}
+	if _, ok := s.db.(txBeginner); ok {
+		err = withTx(ctx, s.db, "create saved star gift", func(tx pgx.Tx) error { return create(tx) })
+	} else {
+		err = create(s.db)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("create star gift: %w", err)
 	}
@@ -516,7 +549,9 @@ LEFT JOIN star_gift_collectible_revisions acr
 	if filter.ExcludeUnlimited {
 		conditions = append(conditions, "p.unique_gift_id IS NOT NULL")
 	}
-	upgradable := `(p.unique_gift_id IS NULL AND acr.id IS NOT NULL AND acr.upgrade_stars > 0 AND acr.issued < acr.supply_total)`
+	upgradable := `(p.unique_gift_id IS NULL AND acr.id IS NOT NULL AND acr.upgrade_stars > 0 AND (
+EXISTS (SELECT 1 FROM star_gift_collectible_reservations reservation WHERE reservation.saved_gift_id=p.id)
+OR acr.issued + acr.reserved < acr.supply_total))`
 	if filter.ExcludeUpgradable {
 		conditions = append(conditions, "NOT "+upgradable)
 	}
@@ -569,6 +604,7 @@ SELECT p.id, p.owner_peer_type, p.owner_peer_id, p.from_user_id, p.gift_id, p.ca
        p.lifecycle_status, p.transfer_stars, p.can_export_at, p.can_transfer_at, p.can_resell_at,
        p.drop_original_details_stars, p.can_craft_at,
 	   p.message, p.message_entities::text, COALESCE(p.unique_gift_id, 0), p.upgrade_msg_id, p.pinned_order,
+	   EXISTS (SELECT 1 FROM star_gift_collectible_reservations reservation WHERE reservation.saved_gift_id=p.id),
        COALESCE((SELECT array_agg(i.collection_id ORDER BY c.sort_order, i.collection_id)
                  FROM star_gift_collection_items i
                  JOIN star_gift_collections c ON c.collection_id=i.collection_id
@@ -723,6 +759,7 @@ SELECT p.id, p.owner_peer_type, p.owner_peer_id, p.from_user_id, p.gift_id, p.ca
 	   p.lifecycle_status, p.transfer_stars, p.can_export_at, p.can_transfer_at, p.can_resell_at,
 	   p.drop_original_details_stars, p.can_craft_at,
 	       p.message, p.message_entities::text, COALESCE(p.unique_gift_id, 0), p.upgrade_msg_id, p.pinned_order,
+	       EXISTS (SELECT 1 FROM star_gift_collectible_reservations reservation WHERE reservation.saved_gift_id=p.id),
        COALESCE((SELECT array_agg(i.collection_id ORDER BY c.sort_order, i.collection_id)
                  FROM star_gift_collection_items i
                  JOIN star_gift_collections c ON c.collection_id=i.collection_id
@@ -863,6 +900,7 @@ SELECT p.id, p.owner_peer_type, p.owner_peer_id, p.from_user_id, p.gift_id, p.ca
 	   p.lifecycle_status, p.transfer_stars, p.can_export_at, p.can_transfer_at, p.can_resell_at,
 	   p.drop_original_details_stars, p.can_craft_at,
 	       p.message, p.message_entities::text, COALESCE(p.unique_gift_id, 0), p.upgrade_msg_id, p.pinned_order,
+	       EXISTS (SELECT 1 FROM star_gift_collectible_reservations reservation WHERE reservation.saved_gift_id=p.id),
        COALESCE((SELECT array_agg(i.collection_id ORDER BY c.sort_order, i.collection_id)
                  FROM star_gift_collection_items i
                  JOIN star_gift_collections c ON c.collection_id=i.collection_id
@@ -910,7 +948,7 @@ func scanSavedStarGift(row rowScanner) (domain.SavedStarGift, error) {
 		&g.NameHidden, &g.Unsaved, &g.Converted, &g.ConvertStars, &g.PrepaidUpgradeStars, &g.PrepaidUpgradeHash, &g.GiftNum,
 		&g.LifecycleStatus, &g.TransferStars, &g.CanExportAt, &g.CanTransferAt, &g.CanResellAt,
 		&g.DropOriginalDetailsStars, &g.CanCraftAt, &g.Message, &entitiesJSON, &g.UniqueGiftID,
-		&g.UpgradeMsgID, &g.PinnedOrder, &g.CollectionIDs); err != nil {
+		&g.UpgradeMsgID, &g.PinnedOrder, &g.HasCollectibleReservation, &g.CollectionIDs); err != nil {
 		return domain.SavedStarGift{}, err
 	}
 	g.Owner.Type = domain.PeerType(ownerType)
@@ -935,7 +973,7 @@ func savedStarGiftRefWhere(ref domain.SavedStarGiftRef) (string, []any) {
 	default:
 		args = append(args, ref.MsgID)
 		return `owner_peer_type = $1 AND owner_peer_id = $2 AND (
-msg_id = $3 OR EXISTS (
+msg_id = $3 OR upgrade_msg_id = $3 OR EXISTS (
     SELECT 1 FROM star_gift_user_message_refs r
     WHERE r.saved_gift_id = id AND r.owner_user_id = $2 AND r.msg_id = $3
 ))`, args

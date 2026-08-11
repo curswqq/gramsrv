@@ -140,6 +140,18 @@ type RevokeCustomVerificationRequest struct {
 	PeerID        int64           `json:"peer_id"`
 }
 
+type GrantCustomVerificationRequest struct {
+	CommandMeta
+	VerifierBotID int64           `json:"verifier_bot_id"`
+	PeerType      domain.PeerType `json:"peer_type"`
+	PeerID        int64           `json:"peer_id"`
+	Description   string          `json:"description,omitempty"`
+}
+
+type customVerificationSetter interface {
+	SetCustomVerification(context.Context, domain.SetCustomVerificationRequest) (bool, error)
+}
+
 // ApproveBotVerificationRequest grants the mark an application asked for. The
 // mark and the approved status commit together in the use-case layer, so an
 // approved application without its mark is not a reachable state.
@@ -587,6 +599,36 @@ func (s *Service) RevokeCustomVerification(ctx context.Context, req RevokeCustom
 			message = "custom verification was already absent"
 		}
 		return CommandResult{Message: message, Details: details}, nil
+	})
+}
+
+// GrantCustomVerification is the audited operator shortcut for an already
+// configured verifier. Icon ownership, verifier enablement, peer existence and
+// description policy remain enforced by the same use-case as
+// bots.setCustomVerification; the admin route cannot invent a checkmark.
+func (s *Service) GrantCustomVerification(ctx context.Context, req GrantCustomVerificationRequest) (CommandResult, error) {
+	if s == nil || s.botVerification == nil {
+		return CommandResult{}, botVerificationCoded(domain.ErrVerifierNotFound)
+	}
+	setter, ok := s.botVerification.(customVerificationSetter)
+	peer := domain.Peer{Type: req.PeerType, ID: req.PeerID}
+	if !ok || req.VerifierBotID <= 0 || req.PeerID <= 0 || (req.PeerType != domain.PeerTypeUser && req.PeerType != domain.PeerTypeChannel) {
+		return CommandResult{}, botVerificationCoded(domain.ErrCustomVerificationTargetInvalid)
+	}
+	return s.runCommand(ctx, req.CommandMeta, ActionGrantCustomVerification, req.PeerID, peer, req, func() (CommandResult, error) {
+		details := map[string]any{"verifier_bot_id": req.VerifierBotID, "peer_type": req.PeerType, "peer_id": req.PeerID, "description": req.Description}
+		if req.DryRun {
+			return CommandResult{Message: "third-party verification validated", Details: details}, nil
+		}
+		changed, err := setter.SetCustomVerification(ctx, domain.SetCustomVerificationRequest{
+			VerifierBotID: req.VerifierBotID, Peer: peer, Enabled: true,
+			CustomDescription: req.Description, CallerUserID: req.VerifierBotID,
+		})
+		if err != nil {
+			return CommandResult{Details: details}, botVerificationError(err)
+		}
+		details["changed"] = changed
+		return CommandResult{Message: "third-party verification granted", Details: details}, nil
 	})
 }
 

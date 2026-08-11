@@ -76,12 +76,16 @@ func (r *Router) viewerPremium(ctx context.Context, userID int64) bool {
 }
 
 // NotifyUserChanged 是 Admin 用例层可调用的 domain-only hook：账号基础事实
-// 变更后失效 RPC 投影缓存，并向本人在线 session 推 updateUser。它不把 tg.*
-// 泄漏给 admin/domain/app，协议对象只在 rpc 边界内构造。
+// 变更后先失效 viewer-independent user cache，再失效 RPC 投影缓存并向本人
+// 在线 session 推 updateUser。Premium entitlement writes use their own aggregate
+// store and therefore do not pass through users.Service's write methods; without
+// this invalidation a cached pre-Premium user could keep failing gated RPCs such as
+// account.updateEmojiStatus until the Redis TTL elapsed.
 func (r *Router) NotifyUserChanged(ctx context.Context, u domain.User) error {
 	if r == nil || u.ID == 0 {
 		return nil
 	}
+	r.invalidatePremiumUserCaches(ctx, u.ID)
 	r.invalidateRPCProjectionForUser(u.ID)
 	r.pushPremiumStatusUpdate(ctx, u)
 	return nil

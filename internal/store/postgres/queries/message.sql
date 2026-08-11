@@ -124,7 +124,8 @@ INSERT INTO private_messages (
   rich_message,
   via_bot_id,
   grouped_id,
-  effect
+  effect,
+  paid_message_stars
 ) VALUES (
   $1, $2, $3, sqlc.arg(request_fingerprint)::bytea, sqlc.arg(recipient_delivered)::boolean,
   0, 0, 0, 0,
@@ -148,7 +149,8 @@ INSERT INTO private_messages (
   sqlc.arg(rich_message_json)::jsonb,
   sqlc.arg(via_bot_id)::bigint,
   sqlc.arg(grouped_id)::bigint,
-  sqlc.arg(effect)::bigint
+  sqlc.arg(effect)::bigint,
+  sqlc.arg(paid_message_stars)::bigint
 )
 ON CONFLICT (sender_user_id, random_id) WHERE random_id <> 0 DO NOTHING
 RETURNING
@@ -233,7 +235,8 @@ INSERT INTO message_boxes (
   rich_message,
   via_bot_id,
   grouped_id,
-  effect
+  effect,
+  paid_message_stars
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8,
   sqlc.arg(ttl_period)::int,
@@ -266,7 +269,8 @@ INSERT INTO message_boxes (
   sqlc.arg(rich_message_json)::jsonb,
   sqlc.arg(via_bot_id)::bigint,
   sqlc.arg(grouped_id)::bigint,
-  sqlc.arg(effect)::bigint
+  sqlc.arg(effect)::bigint,
+  sqlc.arg(paid_message_stars)::bigint
 )
 RETURNING
   box_id,
@@ -310,6 +314,7 @@ RETURNING
   via_bot_id,
   grouped_id,
   effect,
+  paid_message_stars,
   reply_markup::text AS reply_markup_json,
   rich_message::text AS rich_message_json;
 
@@ -356,6 +361,7 @@ SELECT
   via_bot_id,
   grouped_id,
   effect,
+  paid_message_stars,
   reply_markup::text AS reply_markup_json,
   rich_message::text AS rich_message_json
 FROM message_boxes
@@ -496,6 +502,7 @@ base AS NOT MATERIALIZED (
     m.via_bot_id,
     m.grouped_id,
     m.effect,
+    m.paid_message_stars,
     m.reply_markup::text AS reply_markup_json,
     m.rich_message::text AS rich_message_json,
     COALESCE(peer_u.id, 0)::bigint AS peer_user_id,
@@ -701,6 +708,7 @@ SELECT
   via_bot_id,
   grouped_id,
   effect,
+  paid_message_stars,
   reply_markup_json,
   rich_message_json,
   peer_user_id,
@@ -785,8 +793,9 @@ SELECT
   m.pinned,
   m.via_bot_id,
   m.grouped_id,
-  m.effect,
-  m.reply_markup::text AS reply_markup_json,
+    m.effect,
+    m.paid_message_stars,
+    m.reply_markup::text AS reply_markup_json,
   m.rich_message::text AS rich_message_json,
   COALESCE(peer_u.id, 0)::bigint AS peer_user_id,
   COALESCE(peer_u.access_hash, 0)::bigint AS peer_access_hash,
@@ -994,8 +1003,9 @@ SELECT
   m.pinned,
   m.via_bot_id,
   m.grouped_id,
-  m.effect,
-  m.reply_markup::text AS reply_markup_json,
+    m.effect,
+    m.paid_message_stars,
+    m.reply_markup::text AS reply_markup_json,
   m.rich_message::text AS rich_message_json,
   COALESCE(peer_u.id, 0)::bigint AS peer_user_id,
   COALESCE(peer_u.access_hash, 0)::bigint AS peer_access_hash,
@@ -1080,6 +1090,7 @@ SELECT
   via_bot_id,
   grouped_id,
   effect,
+  paid_message_stars,
   reply_markup::text AS reply_markup_json,
   rich_message::text AS rich_message_json
 FROM message_boxes
@@ -1135,6 +1146,7 @@ SELECT
   via_bot_id,
   grouped_id,
   effect,
+  paid_message_stars,
   reply_markup::text AS reply_markup_json,
   rich_message::text AS rich_message_json
 FROM message_boxes
@@ -1223,6 +1235,7 @@ RETURNING
   via_bot_id,
   grouped_id,
   effect,
+  paid_message_stars,
   reply_markup::text AS reply_markup_json,
   rich_message::text AS rich_message_json;
 
@@ -1524,6 +1537,7 @@ SELECT
   via_bot_id,
   grouped_id,
   effect,
+  paid_message_stars,
   reply_markup::text AS reply_markup_json,
   rich_message::text AS rich_message_json
 FROM message_boxes

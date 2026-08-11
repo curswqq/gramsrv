@@ -848,6 +848,55 @@ func TestSendMediaPrivateSticker(t *testing.T) {
 	}
 }
 
+func TestSendMediaPrivateReplyToExistingIncomingMessage(t *testing.T) {
+	ctx := context.Background()
+	r, owner, friend := newMediaTestRouter(t)
+
+	if _, err := r.onMessagesSendMessage(WithUserID(ctx, friend.ID), &tg.MessagesSendMessageRequest{
+		Peer:     &tg.InputPeerUser{UserID: owner.ID, AccessHash: owner.AccessHash},
+		Message:  "message visible to owner",
+		RandomID: 1101,
+	}); err != nil {
+		t.Fatalf("send incoming message: %v", err)
+	}
+	history, err := r.deps.Messages.GetHistory(ctx, owner.ID, domain.MessageFilter{
+		HasPeer: true,
+		Peer:    domain.Peer{Type: domain.PeerTypeUser, ID: friend.ID},
+		Limit:   10,
+	})
+	if err != nil {
+		t.Fatalf("owner history: %v", err)
+	}
+	if len(history.Messages) != 1 {
+		t.Fatalf("owner history messages = %d, want 1", len(history.Messages))
+	}
+	visibleMessageID := history.Messages[0].ID
+
+	req := &tg.MessagesSendMediaRequest{
+		Peer: &tg.InputPeerUser{UserID: friend.ID, AccessHash: friend.AccessHash},
+		Media: &tg.InputMediaContact{
+			PhoneNumber: "+15550009003",
+			FirstName:   "Reply attachment",
+		},
+		RandomID: 1102,
+	}
+	replyTo := &tg.InputReplyToMessage{ReplyToMsgID: visibleMessageID}
+	replyTo.SetReplyToPeerID(&tg.InputPeerUser{UserID: friend.ID, AccessHash: friend.AccessHash})
+	req.SetReplyTo(replyTo)
+	updates, err := r.onMessagesSendMedia(WithUserID(ctx, owner.ID), req)
+	if err != nil {
+		t.Fatalf("send media reply: %v", err)
+	}
+	msg := newMessageFromUpdates(t, updates)
+	header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
+	if !ok {
+		t.Fatalf("reply header = %T, want *tg.MessageReplyHeader", msg.ReplyTo)
+	}
+	if header.ReplyToMsgID != visibleMessageID {
+		t.Fatalf("reply message id = %d, want %d", header.ReplyToMsgID, visibleMessageID)
+	}
+}
+
 func TestSendMediaVoicePrivacyPreflightsBeforeUploadMaterialization(t *testing.T) {
 	ctx := context.Background()
 	r, owner, friend := newMediaTestRouter(t)

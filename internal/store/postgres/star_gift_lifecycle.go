@@ -340,14 +340,12 @@ func (s *StarGiftLifecycleStore) SetStarGiftListing(ctx context.Context, req dom
 			if unique.ResaleTonOnly && req.Amount.Currency != domain.StarGiftCurrencyTON {
 				return domain.ErrStarGiftResaleUnavailable
 			}
-			var minimum int64
-			if req.Amount.Currency == domain.StarGiftCurrencyStars {
-				if err := tx.QueryRow(ctx, `SELECT resell_min_stars FROM star_gift_catalog WHERE gift_id=$1`, unique.GiftID).Scan(&minimum); err != nil {
-					return err
-				}
-				if req.Amount.Amount < minimum {
-					return domain.ErrStarGiftResaleUnavailable
-				}
+			// resell_min_stars is the cheapest active market listing projected
+			// back onto the catalog. Treating that changing value as a write
+			// constraint prevents a seller from listing at Telegram's standard
+			// 125-Star floor whenever the current market happens to be higher.
+			if req.Amount.Currency == domain.StarGiftCurrencyStars && req.Amount.Amount < domain.StarGiftMinimumResaleStars {
+				return domain.ErrStarGiftResaleUnavailable
 			}
 			_, err = tx.Exec(ctx, `INSERT INTO star_gift_listings(unique_gift_id,seller_peer_type,seller_peer_id,currency,amount,listed_at,updated_at)
 VALUES($1,$2,$3,$4,$5,$6,$6)
@@ -391,6 +389,7 @@ func (s *StarGiftLifecycleStore) TransferStarGift(ctx context.Context, req domai
 	var result domain.StarGiftTransferResult
 	var sourceSaved domain.SavedStarGift
 	hooks := privateSendTxHooks{
+		projectMedia: projectPrivateStarGiftTransfer,
 		before: func(ctx context.Context, tx pgx.Tx, send *domain.SendPrivateTextRequest) error {
 			saved, unique, err := lockTransferableStarGift(ctx, tx, req.ActorUserID, req.Ref, req.Date)
 			if err != nil {
@@ -494,14 +493,12 @@ func (s *StarGiftLifecycleStore) PurchaseResaleStarGift(ctx context.Context, req
 	} else if !validLifecyclePeer(unique.Owner) || unique.Owner == req.To {
 		return domain.StarGiftTransferResult{}, domain.ErrStarGiftResaleUnavailable
 	}
-	messageSenderID := domain.OfficialSystemUserID
-	if seller.Type == domain.PeerTypeUser {
-		messageSenderID = seller.ID
-	}
-	messageRecipientID := req.BuyerUserID
-	if req.To.Type == domain.PeerTypeUser {
-		messageRecipientID = req.To.ID
-	}
+	// A resale has three distinct parties: the seller receives the payment,
+	// while the buyer sends the purchased gift to the selected destination.
+	// Using the seller as the service-message sender makes Telegram clients say
+	// that the seller bought the gift for the recipient and also breaks the
+	// recipient-side gift projection for "send from Marketplace" purchases.
+	messageSenderID, messageRecipientID := starGiftResaleMessageUsers(req)
 	messageReq := domain.SendPrivateTextRequest{
 		SenderUserID: messageSenderID, RecipientUserID: messageRecipientID,
 		RandomID: lifecycleCommandRandomID("gift-resale", req.BuyerUserID, req.CommandKey), Date: req.Date,
@@ -639,6 +636,9 @@ func (s *StarGiftLifecycleStore) PurchaseResaleStarGift(ctx context.Context, req
 			return updateStarGiftResaleProjection(ctx, tx, result.Unique.GiftID)
 		},
 	}
+	if req.To.Type == domain.PeerTypeUser {
+		hooks.projectMedia = projectPrivateStarGiftTransfer
+	}
 	sent, err := s.messages.sendPrivateTextWithHooks(ctx, messageReq, hooks)
 	if err != nil {
 		return domain.StarGiftTransferResult{}, err
@@ -650,11 +650,19 @@ func (s *StarGiftLifecycleStore) PurchaseResaleStarGift(ctx context.Context, req
 	return result, nil
 }
 
+func starGiftResaleMessageUsers(req domain.StarGiftResalePurchaseRequest) (senderUserID, recipientUserID int64) {
+	if req.To.Type == domain.PeerTypeUser {
+		return req.BuyerUserID, req.To.ID
+	}
+	return domain.OfficialSystemUserID, req.BuyerUserID
+}
+
 func lockSavedStarGiftByUniqueID(ctx context.Context, tx pgx.Tx, uniqueID int64) (domain.SavedStarGift, bool, error) {
 	row := tx.QueryRow(ctx, `SELECT p.id,p.owner_peer_type,p.owner_peer_id,p.from_user_id,p.gift_id,p.catalog_revision_id,
 	 p.msg_id,p.saved_id,p.gift_date,p.name_hidden,p.unsaved,p.converted,p.convert_stars,p.prepaid_upgrade_stars,p.prepaid_upgrade_hash,p.gift_num,
 	 p.lifecycle_status,p.transfer_stars,p.can_export_at,p.can_transfer_at,p.can_resell_at,p.drop_original_details_stars,p.can_craft_at,
 	 p.message,p.message_entities::text,COALESCE(p.unique_gift_id,0),p.upgrade_msg_id,p.pinned_order,
+	 EXISTS (SELECT 1 FROM star_gift_collectible_reservations reservation WHERE reservation.saved_gift_id=p.id),
 	 COALESCE((SELECT array_agg(i.collection_id ORDER BY c.sort_order,i.collection_id) FROM star_gift_collection_items i
 	 JOIN star_gift_collections c ON c.collection_id=i.collection_id WHERE i.saved_gift_id=p.id),ARRAY[]::integer[])
 	 FROM peer_star_gifts p WHERE p.unique_gift_id=$1 FOR UPDATE`, uniqueID)
@@ -949,6 +957,9 @@ func (s *StarGiftLifecycleStore) ResolveStarGiftOffer(ctx context.Context, req d
 			}
 			return updateStarGiftResaleProjection(ctx, tx, result.Offer.Gift.GiftID)
 		},
+	}
+	if !req.Decline {
+		hooks.projectMedia = projectPrivateStarGiftTransfer
 	}
 	sent, err := s.messages.sendPrivateTextWithHooks(ctx, messageReq, hooks)
 	if err != nil {
@@ -1381,6 +1392,7 @@ func savedStarGiftByUniqueID(ctx context.Context, db sqlcgen.DBTX, uniqueID int6
 	 p.msg_id,p.saved_id,p.gift_date,p.name_hidden,p.unsaved,p.converted,p.convert_stars,p.prepaid_upgrade_stars,p.prepaid_upgrade_hash,p.gift_num,
 	 p.lifecycle_status,p.transfer_stars,p.can_export_at,p.can_transfer_at,p.can_resell_at,p.drop_original_details_stars,p.can_craft_at,
 	 p.message,p.message_entities::text,COALESCE(p.unique_gift_id,0),p.upgrade_msg_id,p.pinned_order,
+	 EXISTS (SELECT 1 FROM star_gift_collectible_reservations reservation WHERE reservation.saved_gift_id=p.id),
 	 COALESCE((SELECT array_agg(i.collection_id ORDER BY c.sort_order,i.collection_id) FROM star_gift_collection_items i
 	 JOIN star_gift_collections c ON c.collection_id=i.collection_id WHERE i.saved_gift_id=p.id),ARRAY[]::integer[])
 	 FROM peer_star_gifts p WHERE p.unique_gift_id=$1`, uniqueID)

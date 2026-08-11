@@ -1,0 +1,10 @@
+# Keep SYN cookies enabled as a fallback and give the public listeners enough
+# queue capacity to absorb short bursts before that fallback is needed.
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_max_syn_backlog = 16384
+net.core.somaxconn = 16384
+
+# The raw-prerouting guard rejects excessive SYN traffic before conntrack. The
+# larger table still leaves comfortable headroom for legitimate MTProto/TURN,
+# HTTP/3 and media sessions on this 8 GiB host.
+net.netfilter.nf_conntrack_max = 524288

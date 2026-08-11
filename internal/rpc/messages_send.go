@@ -328,14 +328,6 @@ func (r *Router) messageReplyFromInput(ctx context.Context, userID int64, peer d
 	if _, ok := reply.GetPollOption(); ok {
 		return nil, pollOptionInvalidErr()
 	}
-	replyPeer := peer
-	if inputPeer, ok := reply.GetReplyToPeerID(); ok {
-		parsed, err := r.checkedDomainPeerFromInputPeer(ctx, userID, inputPeer)
-		if err != nil {
-			return nil, replyMessageIDInvalidErr()
-		}
-		replyPeer = parsed
-	}
 	topMsgID, ok := reply.GetTopMsgID()
 	if ok && (topMsgID < 0 || topMsgID > domain.MaxMessageBoxID) {
 		return nil, replyMessageIDInvalidErr()
@@ -346,16 +338,61 @@ func (r *Router) messageReplyFromInput(ctx context.Context, userID int64, peer d
 	if reply.ReplyToMsgID == 0 && topMsgID == 0 {
 		return nil, replyMessageIDInvalidErr()
 	}
+	replyPeer := peer
+	inputReplyPeer, explicitReplyPeer := reply.GetReplyToPeerID()
+	var parsedExplicitReplyPeer domain.Peer
+	if explicitReplyPeer {
+		parsed, err := r.checkedDomainPeerFromInputPeer(ctx, userID, inputReplyPeer)
+		if err != nil {
+			return nil, replyMessageIDInvalidErr()
+		}
+		parsedExplicitReplyPeer = parsed
+	}
+	var ownerMessage *domain.Message
+	if reply.ReplyToMsgID > 0 && r.deps.Messages != nil {
+		list, err := r.deps.Messages.GetMessages(ctx, userID, []int{reply.ReplyToMsgID})
+		if err != nil {
+			return nil, replyMessageIDInvalidErr()
+		}
+		if len(list.Messages) == 1 && list.Messages[0].ID == reply.ReplyToMsgID {
+			ownerMessage = &list.Messages[0]
+		}
+	}
+
+	// Official clients may attach a redundant or stale reply_to_peer_id when a
+	// text reply becomes a media reply. Prefer the destination dialog whenever
+	// the referenced message really exists there. This keeps ordinary replies
+	// stable while preserving explicit cross-dialog replies when the destination
+	// does not contain that message.
+	destinationHasReply := ownerMessage != nil && peer.Type == domain.PeerTypeUser && ownerMessage.Peer == peer
+	if peer.Type == domain.PeerTypeChannel && reply.ReplyToMsgID > 0 && r.deps.Channels != nil {
+		history, err := r.deps.Channels.GetMessages(ctx, userID, peer.ID, []int{reply.ReplyToMsgID})
+		destinationHasReply = err == nil && len(history.Messages) == 1 && history.Messages[0].ID == reply.ReplyToMsgID
+	}
+	if !destinationHasReply && explicitReplyPeer {
+		replyPeer = parsedExplicitReplyPeer
+	}
 	// inputReplyToMessage.reply_to_peer_id is explicitly allowed to point to a
 	// different dialog. Private-source existence is checked transactionally by
 	// MessageStore; channel sources are validated here because they live in the
 	// channel store rather than message_boxes.
-	if replyPeer.Type == domain.PeerTypeChannel && reply.ReplyToMsgID > 0 {
+	if replyPeer.Type == domain.PeerTypeChannel && reply.ReplyToMsgID > 0 && !destinationHasReply {
 		if r.deps.Channels == nil {
 			return nil, replyMessageIDInvalidErr()
 		}
 		history, err := r.deps.Channels.GetMessages(ctx, userID, replyPeer.ID, []int{reply.ReplyToMsgID})
 		if err != nil || len(history.Messages) != 1 || history.Messages[0].ID != reply.ReplyToMsgID {
+			return nil, replyMessageIDInvalidErr()
+		}
+	} else if replyPeer.Type == domain.PeerTypeUser && reply.ReplyToMsgID > 0 && r.deps.Messages != nil {
+		// A private message box id is unique for its owner. Some official clients
+		// keep a stale reply_to_peer_id, while some media reply paths omit it even
+		// when using "reply in another chat". Resolve the source by the caller's own
+		// box id in both cases and canonicalize its peer instead of looking up the
+		// message in the destination dialog.
+		if ownerMessage != nil && ownerMessage.Peer.Type == domain.PeerTypeUser && ownerMessage.Peer.ID != 0 {
+			replyPeer = ownerMessage.Peer
+		} else if explicitReplyPeer {
 			return nil, replyMessageIDInvalidErr()
 		}
 	}

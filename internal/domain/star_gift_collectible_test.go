@@ -42,6 +42,52 @@ func TestStarGiftLifecycleStatusRequiresExplicitActive(t *testing.T) {
 	}
 }
 
+func TestStarGiftCollectibleUpgradeAvailableRequiresRemainingSupply(t *testing.T) {
+	tests := []struct {
+		name string
+		gift StarGift
+		want bool
+	}{
+		{name: "remaining supply", gift: StarGift{UpgradeStars: 25, UpgradeTotal: 100, UpgradeIssued: 99}, want: true},
+		{name: "exhausted supply", gift: StarGift{UpgradeStars: 25, UpgradeTotal: 100, UpgradeIssued: 100}},
+		{name: "over issued supply", gift: StarGift{UpgradeStars: 25, UpgradeTotal: 100, UpgradeIssued: 101}},
+		{name: "missing published pool", gift: StarGift{UpgradeStars: 25}},
+		{name: "missing upgrade price", gift: StarGift{UpgradeTotal: 100}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.gift.CollectibleUpgradeAvailable(); got != tt.want {
+				t.Fatalf("CollectibleUpgradeAvailable() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStarGiftEffectivePurchaseAvailabilityUsesTightestLimit(t *testing.T) {
+	tests := []struct {
+		name                   string
+		gift                   StarGift
+		wantLimited            bool
+		wantRemains, wantTotal int
+	}{
+		{name: "unlimited", gift: StarGift{}},
+		{name: "base catalog", gift: StarGift{Limited: true, AvailabilityRemains: 7, AvailabilityTotal: 10}, wantLimited: true, wantRemains: 7, wantTotal: 10},
+		{name: "collectible pool", gift: StarGift{UpgradeStars: 25, UpgradeIssued: 4, UpgradeTotal: 10}, wantLimited: true, wantRemains: 6, wantTotal: 10},
+		{name: "collectible exhausted", gift: StarGift{UpgradeStars: 25, UpgradeIssued: 10, UpgradeTotal: 10}, wantLimited: true, wantTotal: 10},
+		{name: "base is tighter", gift: StarGift{Limited: true, AvailabilityRemains: 2, AvailabilityTotal: 20, UpgradeStars: 25, UpgradeIssued: 5, UpgradeTotal: 10}, wantLimited: true, wantRemains: 2, wantTotal: 20},
+		{name: "collectible is tighter", gift: StarGift{Limited: true, AvailabilityRemains: 9, AvailabilityTotal: 20, UpgradeStars: 25, UpgradeIssued: 8, UpgradeTotal: 10}, wantLimited: true, wantRemains: 2, wantTotal: 10},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			limited, remains, total := tt.gift.EffectivePurchaseAvailability()
+			if limited != tt.wantLimited || remains != tt.wantRemains || total != tt.wantTotal {
+				t.Fatalf("EffectivePurchaseAvailability() = (%v,%d,%d), want (%v,%d,%d)",
+					limited, remains, total, tt.wantLimited, tt.wantRemains, tt.wantTotal)
+			}
+		})
+	}
+}
+
 func validCollectibleDraft() StarGiftCollectibleWrite {
 	animation := &StarGiftAnimation{JSON: []byte(`{}`), TGS: []byte{1}, SHA256: make([]byte, sha256.Size)}
 	return StarGiftCollectibleWrite{

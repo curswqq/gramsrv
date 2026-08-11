@@ -101,6 +101,100 @@ RETURNING balance, granted`, userID, amount).Scan(&out.Balance, &out.Granted); e
 	return out, nil
 }
 
+// CreditAllUsers atomically credits every live non-bot account. commandKey is
+// an independent durable idempotency key, so a retry remains safe even if the
+// caller crashed after this transaction committed but before its command
+// journal was marked complete.
+func (s *StarsStore) CreditAllUsers(ctx context.Context, amount int64, reason domain.StarsTransactionReason, date int, title, desc, commandKey string) ([]domain.StarsBalance, bool, int, error) {
+	if amount <= 0 || commandKey == "" {
+		return nil, false, 0, domain.ErrStarsInvalidAmount
+	}
+	var balances []domain.StarsBalance
+	applied, recipientCount := false, 0
+	err := withTx(ctx, s.db, "credit stars to all users", func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+INSERT INTO stars_bulk_grants(command_key, amount)
+VALUES($1,$2)
+ON CONFLICT(command_key) DO NOTHING`, commandKey, amount)
+		if err != nil {
+			return fmt.Errorf("insert stars bulk grant: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			var recordedAmount int64
+			if err := tx.QueryRow(ctx, `SELECT amount, recipient_count FROM stars_bulk_grants WHERE command_key=$1`, commandKey).Scan(&recordedAmount, &recipientCount); err != nil {
+				return fmt.Errorf("load stars bulk grant replay: %w", err)
+			}
+			if recordedAmount != amount {
+				return domain.ErrStarsInvalidAmount
+			}
+			return nil
+		}
+
+		rows, err := tx.Query(ctx, `
+SELECT id FROM users
+WHERE NOT is_bot AND deleted_at IS NULL AND id <> $1
+ORDER BY id
+FOR SHARE`, domain.OfficialSystemUserID)
+		if err != nil {
+			return fmt.Errorf("list stars bulk recipients: %w", err)
+		}
+		var ids []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		if len(ids) == 0 {
+			applied = true
+			return nil
+		}
+
+		balanceRows, err := tx.Query(ctx, `
+INSERT INTO stars_balances(user_id, balance, updated_at)
+SELECT target_id, $2, now() FROM unnest($1::bigint[]) AS target_id
+ON CONFLICT(user_id) DO UPDATE
+SET balance=stars_balances.balance + EXCLUDED.balance, updated_at=now()
+RETURNING user_id, balance, granted`, ids, amount)
+		if err != nil {
+			return fmt.Errorf("credit stars bulk balances: %w", err)
+		}
+		for balanceRows.Next() {
+			var balance domain.StarsBalance
+			if err := balanceRows.Scan(&balance.UserID, &balance.Balance, &balance.Granted); err != nil {
+				balanceRows.Close()
+				return err
+			}
+			balances = append(balances, balance)
+		}
+		if err := balanceRows.Err(); err != nil {
+			balanceRows.Close()
+			return err
+		}
+		balanceRows.Close()
+		if _, err := tx.Exec(ctx, `
+INSERT INTO stars_transactions(user_id, amount, reason, title, description, date)
+SELECT target_id, $2, $3, $4, $5, $6 FROM unnest($1::bigint[]) AS target_id`,
+			ids, amount, string(reason), title, desc, date); err != nil {
+			return fmt.Errorf("insert stars bulk transactions: %w", err)
+		}
+		recipientCount = len(ids)
+		if _, err := tx.Exec(ctx, `UPDATE stars_bulk_grants SET recipient_count=$2 WHERE command_key=$1`, commandKey, recipientCount); err != nil {
+			return fmt.Errorf("complete stars bulk grant: %w", err)
+		}
+		applied = true
+		return nil
+	})
+	return balances, applied, recipientCount, err
+}
+
 func (s *StarsStore) Debit(ctx context.Context, userID, amount int64, reason domain.StarsTransactionReason, peer domain.Peer, date int, title, desc string) (domain.StarsBalance, error) {
 	if userID == 0 || amount <= 0 {
 		return domain.StarsBalance{}, domain.ErrStarsInvalidAmount

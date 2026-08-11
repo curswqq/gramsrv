@@ -108,6 +108,9 @@ func tgMessage(m domain.Message) tg.MessageClass {
 	if m.Effect != 0 {
 		msg.SetEffect(m.Effect)
 	}
+	if m.PaidMessageStars > 0 {
+		msg.SetPaidMessageStars(m.PaidMessageStars)
+	}
 	if !m.Media.IsZero() {
 		msg.SetMedia(tgMessageMedia(m.Media))
 		// invert_media 是 message 级标志，但存于媒体快照（免消息表列）：仅当有媒体时投影。
