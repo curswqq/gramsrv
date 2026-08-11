@@ -183,8 +183,8 @@ func TestProjectorMainBlockMasksOwnerForBlockedViewer(t *testing.T) {
 	if blocked.PhotoID != 0 || blocked.PhotoDCID != 0 || len(blocked.PhotoStripped) != 0 {
 		t.Fatalf("blocked photo = id %d dc %d stripped %v, want hidden", blocked.PhotoID, blocked.PhotoDCID, blocked.PhotoStripped)
 	}
-	if blocked.Status.Kind != domain.UserStatusLastMonth || blocked.LastSeenAt != 0 {
-		t.Fatalf("blocked presence = %+v last_seen=%d, want last-month/0", blocked.Status, blocked.LastSeenAt)
+	if blocked.Status.Kind != domain.UserStatusEmpty || blocked.LastSeenAt != 0 {
+		t.Fatalf("blocked presence = %+v last_seen=%d, want long-ago/0", blocked.Status, blocked.LastSeenAt)
 	}
 	if !blocked.Verified || blocked.PremiumUntil == 0 {
 		t.Fatalf("block masked public identity flags: %+v", blocked)
@@ -194,7 +194,7 @@ func TestProjectorMainBlockMasksOwnerForBlockedViewer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ForViewers: %v", err)
 	}
-	if got := projectionUser(t, fanout[blockedViewer], ownerID); got.PhotoID != 0 || got.Status.Kind != domain.UserStatusLastMonth {
+	if got := projectionUser(t, fanout[blockedViewer], ownerID); got.PhotoID != 0 || got.Status.Kind != domain.UserStatusEmpty {
 		t.Fatalf("blocked fanout projection = %+v", got)
 	}
 	if got := projectionUser(t, fanout[otherViewer], ownerID); got.PhotoID != 9201 || got.Status.Kind != domain.UserStatusOnline {
@@ -241,7 +241,7 @@ func TestProjectorMainBlockPreservesViewerPersonalPhoto(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := projectionUser(t, projected, ownerID)
-	if got.PhotoID != 9301 || !got.PhotoPersonal || got.Status.Kind != domain.UserStatusLastMonth {
+	if got.PhotoID != 9301 || !got.PhotoPersonal || got.Status.Kind != domain.UserStatusEmpty {
 		t.Fatalf("blocked personal-photo projection = %+v", got)
 	}
 }

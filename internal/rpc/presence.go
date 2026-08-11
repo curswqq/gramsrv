@@ -881,7 +881,7 @@ func (r *Router) pushStatusPrivacyRefresh(ctx context.Context, ownerUserID int64
 		}
 		status := coarse
 		if blocked[recipientID][ownerUserID] {
-			status = domain.UserStatus{Kind: domain.UserStatusLastMonth}
+			status = domain.UserStatus{Kind: domain.UserStatusEmpty}
 		} else if visible[recipientID] {
 			status = exact
 		}

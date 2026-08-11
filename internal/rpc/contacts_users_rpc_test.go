@@ -528,11 +528,11 @@ func assertBlockProjectionPush(t *testing.T, message bin.Encoder, ownerUserID in
 		if user.Photo != nil {
 			t.Fatalf("blocked projection photo = %#v, want nil", user.Photo)
 		}
-		if _, ok := user.Status.(*tg.UserStatusLastMonth); !ok {
-			t.Fatalf("blocked inline status = %T, want UserStatusLastMonth", user.Status)
+		if _, ok := user.Status.(*tg.UserStatusEmpty); !ok {
+			t.Fatalf("blocked inline status = %T, want UserStatusEmpty", user.Status)
 		}
-		if _, ok := status.Status.(*tg.UserStatusLastMonth); !ok {
-			t.Fatalf("blocked status update = %T, want UserStatusLastMonth", status.Status)
+		if _, ok := status.Status.(*tg.UserStatusEmpty); !ok {
+			t.Fatalf("blocked status update = %T, want UserStatusEmpty", status.Status)
 		}
 		if !user.Verified {
 			t.Fatal("block projection incorrectly removed public verified flag")
@@ -542,10 +542,10 @@ func assertBlockProjectionPush(t *testing.T, message bin.Encoder, ownerUserID in
 	if user.Photo == nil {
 		t.Fatal("unblock projection did not restore profile photo")
 	}
-	if _, stillMasked := user.Status.(*tg.UserStatusLastMonth); stillMasked {
+	if _, stillMasked := user.Status.(*tg.UserStatusEmpty); stillMasked {
 		t.Fatalf("unblocked inline status remained masked: %T", user.Status)
 	}
-	if _, stillMasked := status.Status.(*tg.UserStatusLastMonth); stillMasked {
+	if _, stillMasked := status.Status.(*tg.UserStatusEmpty); stillMasked {
 		t.Fatalf("unblocked status update remained masked: %T", status.Status)
 	}
 	if reflect.TypeOf(user.Status) != reflect.TypeOf(status.Status) {

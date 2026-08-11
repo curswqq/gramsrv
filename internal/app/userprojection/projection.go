@@ -611,7 +611,7 @@ func applyBlockedViewerProjection(user domain.User, blocked bool, personalRefs m
 	if !blocked || user.Deleted {
 		return user
 	}
-	user.Status = domain.UserStatus{Kind: domain.UserStatusLastMonth}
+	user.Status = domain.UserStatus{Kind: domain.UserStatusEmpty}
 	user.LastSeenAt = 0
 	if ref, ok := personalRefs[user.ID]; ok && ref.PhotoID != 0 {
 		ref.Personal = true
