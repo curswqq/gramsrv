@@ -41,7 +41,12 @@ func (r *Router) groupCallOnlineRecipients(ctx context.Context, channelID int64)
 func (r *Router) groupCallUpdateContainer(ctx context.Context, viewerUserID int64, channel domain.Channel, update tg.UpdateClass, userIDs []int64) *tg.Updates {
 	chats := []tg.ChatClass{}
 	if channel.ID != 0 {
-		chats = append(chats, tgChannel(viewerUserID, channel, nil))
+		// Group-call updates do not carry the recipient's ChannelMember projection.
+		// A full channel without that projection clears cached creator/admin rights
+		// in official clients until the next full-channel reload. The min projection
+		// still carries call_active/call_not_empty, while deliberately leaving the
+		// client's authoritative membership and posting rights untouched.
+		chats = append(chats, tgChannelChatMin(viewerUserID, channel))
 	}
 	return &tg.Updates{
 		Updates: []tg.UpdateClass{update},
