@@ -344,6 +344,36 @@ func (s *ContactStore) IsBlocked(_ context.Context, userID, blockedUserID int64)
 	return blocked, nil
 }
 
+func (s *ContactStore) OwnersBlockingViewers(_ context.Context, ownerUserIDs, viewerUserIDs []int64) (map[int64]map[int64]bool, error) {
+	out := make(map[int64]map[int64]bool, len(viewerUserIDs))
+	if len(ownerUserIDs) == 0 || len(viewerUserIDs) == 0 {
+		return out, nil
+	}
+	owners := make(map[int64]struct{}, len(ownerUserIDs))
+	for _, ownerID := range ownerUserIDs {
+		if ownerID != 0 {
+			owners[ownerID] = struct{}{}
+		}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, viewerID := range viewerUserIDs {
+		if viewerID == 0 {
+			continue
+		}
+		for ownerID := range owners {
+			if _, blocked := s.blocks[ownerID][viewerID]; !blocked {
+				continue
+			}
+			if out[viewerID] == nil {
+				out[viewerID] = make(map[int64]bool)
+			}
+			out[viewerID][ownerID] = true
+		}
+	}
+	return out, nil
+}
+
 func (s *ContactStore) ListBlocked(_ context.Context, userID int64, offset, limit int) (domain.BlockedContactList, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

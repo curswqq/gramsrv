@@ -302,6 +302,13 @@ func (r *Router) buildUserFullProjection(ctx context.Context, currentUserID int6
 	if err != nil {
 		return tg.UserFull{}, internalErr()
 	}
+	ownerBlockedViewer := false
+	if r.deps.Contacts != nil && currentUserID != 0 && u.ID != 0 && currentUserID != u.ID {
+		ownerBlockedViewer, err = r.deps.Contacts.IsBlocked(ctx, u.ID, currentUserID)
+		if err != nil {
+			return tg.UserFull{}, internalErr()
+		}
+	}
 	about := u.About
 	if !visibility[domain.PrivacyKeyAbout] {
 		about = ""
@@ -326,9 +333,9 @@ func (r *Router) buildUserFullProjection(ctx context.Context, currentUserID int6
 	// 通话入口：客户端不见 phone_calls_available=true 不显示通话按钮（P1 前置项）。
 	// phone_calls_private 标记对端禁 P2P（p2p_allowed 真值在通话确认时另行计算）。
 	if !u.Bot && u.ID != currentUserID {
-		callsAllowed := visibility[domain.PrivacyKeyPhoneCall]
-		p2pAllowed := visibility[domain.PrivacyKeyPhoneP2P]
-		voiceAllowed := visibility[domain.PrivacyKeyVoiceMessages]
+		callsAllowed := visibility[domain.PrivacyKeyPhoneCall] && !ownerBlockedViewer
+		p2pAllowed := visibility[domain.PrivacyKeyPhoneP2P] && !ownerBlockedViewer
+		voiceAllowed := visibility[domain.PrivacyKeyVoiceMessages] && !ownerBlockedViewer
 		full.PhoneCallsAvailable = callsAllowed
 		full.VideoCallsAvailable = callsAllowed
 		full.PhoneCallsPrivate = !p2pAllowed
@@ -358,7 +365,7 @@ func (r *Router) buildUserFullProjection(ctx context.Context, currentUserID int6
 			break
 		}
 	}
-	if err := r.fillUserFullPhotos(ctx, currentUserID, u.ID, visibility[domain.PrivacyKeyProfilePhoto], &full); err != nil {
+	if err := r.fillUserFullPhotos(ctx, currentUserID, u.ID, visibility[domain.PrivacyKeyProfilePhoto], ownerBlockedViewer, &full); err != nil {
 		return tg.UserFull{}, err
 	}
 	if r.deps.Account != nil {
@@ -793,7 +800,7 @@ func savedMusicDocumentIDs(docs []domain.Document) []int64 {
 	return ids
 }
 
-func (r *Router) fillUserFullPhotos(ctx context.Context, viewerUserID, ownerUserID int64, profileAllowed bool, full *tg.UserFull) error {
+func (r *Router) fillUserFullPhotos(ctx context.Context, viewerUserID, ownerUserID int64, profileAllowed, ownerBlockedViewer bool, full *tg.UserFull) error {
 	if r.deps.Files == nil || full == nil || ownerUserID == 0 {
 		return nil
 	}
@@ -824,6 +831,11 @@ func (r *Router) fillUserFullPhotos(ctx context.Context, viewerUserID, ownerUser
 				full.SetPersonalPhoto(tgPhoto(photo))
 			}
 		}
+	}
+	// A personal photo belongs to the viewer's local contact record. Main-block
+	// privacy suppresses only owner-supplied profile and fallback photos.
+	if ownerBlockedViewer {
+		return nil
 	}
 	if profileAllowed {
 		if photo, found, err := r.deps.Files.CurrentProfilePhotoKind(ctx, domain.PeerTypeUser, ownerUserID, domain.ProfilePhotoKindProfile); err != nil {

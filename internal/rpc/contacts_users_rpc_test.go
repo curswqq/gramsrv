@@ -437,6 +437,147 @@ func TestContactsBlockUnblockFanoutsStoryVisibilityChanges(t *testing.T) {
 	}
 }
 
+func TestContactsBlockUnblockPushesDirectionalUserProjection(t *testing.T) {
+	ctx := context.Background()
+	userStore := memory.NewUserStore()
+	contactStore := memory.NewContactStore()
+	owner, err := userStore.Create(ctx, domain.User{
+		AccessHash: 81,
+		Phone:      "15550008101",
+		FirstName:  "Owner",
+		Verified:   true,
+		LastSeenAt: 1700000000,
+		Status:     domain.UserStatus{Kind: domain.UserStatusOnline, Expires: 1700000300},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewer, err := userStore.Create(ctx, domain.User{AccessHash: 82, Phone: "15550008102", FirstName: "Viewer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := &fakeFiles{
+		photos: map[int64]domain.Photo{
+			9801: {ID: 9801, AccessHash: 98, DCID: 2, Sizes: fakeAvatarStaticSizes()},
+		},
+		profile: map[fakeProfilePhotoKey]int64{
+			{ownerType: domain.PeerTypeUser, ownerID: owner.ID, kind: domain.ProfilePhotoKindProfile}: 9801,
+		},
+	}
+	sessions := &captureSessions{}
+	r := New(Config{}, Deps{
+		Contacts: appcontacts.NewService(contactStore, userStore),
+		Users: appusers.NewService(
+			userStore,
+			appusers.WithContactStore(contactStore),
+			appusers.WithPhotoProvider(files),
+		),
+		Files:    files,
+		Sessions: sessions,
+	}, zaptest.NewLogger(t), fixedClock{now: time.Unix(1700000100, 0)})
+
+	ownerCtx := WithUserID(ctx, owner.ID)
+	if ok, err := r.onContactsBlock(ownerCtx, &tg.ContactsBlockRequest{
+		ID: &tg.InputPeerUser{UserID: viewer.ID, AccessHash: viewer.AccessHash},
+	}); err != nil || !ok {
+		t.Fatalf("contacts.block = %v, %v", ok, err)
+	}
+	if got := sessions.pushedUserIDs(); len(got) != 1 || got[0] != viewer.ID {
+		t.Fatalf("block refresh recipients = %v, want [%d]", got, viewer.ID)
+	}
+	assertBlockProjectionPush(t, sessions.lastUserPush(), owner.ID, true)
+
+	sessions.clearMessages()
+	if ok, err := r.onContactsUnblock(ownerCtx, &tg.ContactsUnblockRequest{
+		ID: &tg.InputPeerUser{UserID: viewer.ID, AccessHash: viewer.AccessHash},
+	}); err != nil || !ok {
+		t.Fatalf("contacts.unblock = %v, %v", ok, err)
+	}
+	if got := sessions.pushedUserIDs(); len(got) != 1 || got[0] != viewer.ID {
+		t.Fatalf("unblock refresh recipients = %v, want [%d]", got, viewer.ID)
+	}
+	assertBlockProjectionPush(t, sessions.lastUserPush(), owner.ID, false)
+}
+
+func assertBlockProjectionPush(t *testing.T, message bin.Encoder, ownerUserID int64, blocked bool) {
+	t.Helper()
+	updates, ok := message.(*tg.Updates)
+	if !ok {
+		t.Fatalf("projection push = %T, want *tg.Updates", message)
+	}
+	if len(updates.Users) != 1 || len(updates.Updates) != 2 {
+		t.Fatalf("projection push users/updates = %d/%d, want 1/2", len(updates.Users), len(updates.Updates))
+	}
+	user, ok := updates.Users[0].(*tg.User)
+	if !ok || user.ID != ownerUserID {
+		t.Fatalf("projection user = %#v", updates.Users[0])
+	}
+	if _, ok := updates.Updates[0].(*tg.UpdateUser); !ok {
+		t.Fatalf("projection update[0] = %T, want *tg.UpdateUser", updates.Updates[0])
+	}
+	status, ok := updates.Updates[1].(*tg.UpdateUserStatus)
+	if !ok || status.UserID != ownerUserID {
+		t.Fatalf("projection update[1] = %#v", updates.Updates[1])
+	}
+	for _, update := range updates.Updates {
+		if _, forbidden := update.(*tg.UpdatePeerBlocked); forbidden {
+			t.Fatal("blocked peer received owner-only updatePeerBlocked")
+		}
+	}
+	if blocked {
+		if user.Photo != nil {
+			t.Fatalf("blocked projection photo = %#v, want nil", user.Photo)
+		}
+		if _, ok := user.Status.(*tg.UserStatusLastMonth); !ok {
+			t.Fatalf("blocked inline status = %T, want UserStatusLastMonth", user.Status)
+		}
+		if _, ok := status.Status.(*tg.UserStatusLastMonth); !ok {
+			t.Fatalf("blocked status update = %T, want UserStatusLastMonth", status.Status)
+		}
+		if !user.Verified {
+			t.Fatal("block projection incorrectly removed public verified flag")
+		}
+		return
+	}
+	if user.Photo == nil {
+		t.Fatal("unblock projection did not restore profile photo")
+	}
+	if _, stillMasked := user.Status.(*tg.UserStatusLastMonth); stillMasked {
+		t.Fatalf("unblocked inline status remained masked: %T", user.Status)
+	}
+	if _, stillMasked := status.Status.(*tg.UserStatusLastMonth); stillMasked {
+		t.Fatalf("unblocked status update remained masked: %T", status.Status)
+	}
+	if reflect.TypeOf(user.Status) != reflect.TypeOf(status.Status) {
+		t.Fatalf("unblocked inline/update status mismatch: %T/%T", user.Status, status.Status)
+	}
+}
+
+func TestPresenceVisibilityAlwaysExcludesBlockedViewers(t *testing.T) {
+	ctx := context.Background()
+	const (
+		ownerID       int64 = 6101
+		blockedViewer int64 = 6102
+		otherViewer   int64 = 6103
+	)
+	store := memory.NewContactStore()
+	if _, err := store.Block(ctx, ownerID, blockedViewer, 100); err != nil {
+		t.Fatal(err)
+	}
+	r := New(Config{}, Deps{
+		Contacts: appcontacts.NewService(store, memory.NewUserStore()),
+	}, zaptest.NewLogger(t), fixedClock{now: time.Unix(1700000100, 0)})
+
+	toViewers := r.statusTimestampVisibleToViewers(ctx, ownerID, []int64{blockedViewer, otherViewer})
+	if toViewers[blockedViewer] || !toViewers[otherViewer] {
+		t.Fatalf("status visibility to viewers = %+v", toViewers)
+	}
+	toViewer := r.statusTimestampVisibleToViewer(ctx, []int64{ownerID, otherViewer}, blockedViewer)
+	if toViewer[ownerID] || !toViewer[otherViewer] {
+		t.Fatalf("status visibility to viewer = %+v", toViewer)
+	}
+}
+
 func TestContactsSetBlockedReplacesStoryBlocklistFanouts(t *testing.T) {
 	ctx := context.Background()
 	users := memory.NewUserStore()

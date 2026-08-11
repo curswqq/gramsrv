@@ -569,6 +569,40 @@ func (s *Service) IsBlocked(ctx context.Context, userID, peerUserID int64) (bool
 	return s.contacts.IsBlocked(ctx, userID, peerUserID)
 }
 
+// OwnersBlockingViewers exposes the directional block matrix to hot projection
+// and presence fan-out paths. PostgreSQL and memory stores provide one bounded
+// batch read; the fallback preserves compatibility with minimal adapters.
+func (s *Service) OwnersBlockingViewers(ctx context.Context, ownerUserIDs, viewerUserIDs []int64) (map[int64]map[int64]bool, error) {
+	out := make(map[int64]map[int64]bool, len(viewerUserIDs))
+	if s == nil || s.contacts == nil || len(ownerUserIDs) == 0 || len(viewerUserIDs) == 0 {
+		return out, nil
+	}
+	if batch, ok := s.contacts.(userprojection.BlockedViewerProvider); ok {
+		return batch.OwnersBlockingViewers(ctx, ownerUserIDs, viewerUserIDs)
+	}
+	for _, viewerID := range viewerUserIDs {
+		if viewerID == 0 {
+			continue
+		}
+		for _, ownerID := range ownerUserIDs {
+			if ownerID == 0 || ownerID == viewerID {
+				continue
+			}
+			blocked, err := s.contacts.IsBlocked(ctx, ownerID, viewerID)
+			if err != nil {
+				return nil, err
+			}
+			if blocked {
+				if out[viewerID] == nil {
+					out[viewerID] = make(map[int64]bool)
+				}
+				out[viewerID][ownerID] = true
+			}
+		}
+	}
+	return out, nil
+}
+
 // GetBlocked returns a bounded blocked contact page.
 func (s *Service) GetBlocked(ctx context.Context, userID int64, offset, limit int) (domain.BlockedContactList, error) {
 	if s == nil || s.contacts == nil || userID == 0 {

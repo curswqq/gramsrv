@@ -37,6 +37,17 @@ type CollectiblePhoneProvider interface {
 	OwnedCollectiblePhones(ctx context.Context, userIDs []int64) (map[int64]domain.CollectiblePhone, error)
 }
 
+// BlockedViewerProvider returns the directional main-blocklist facts needed by
+// user projection. The outer map is keyed by viewer, the inner map by profile
+// owner: result[viewer][owner] is true when owner has blocked viewer.
+//
+// Keeping this as an optional batch capability avoids changing ContactStore's
+// broad interface while preventing an owners x viewers IsBlocked N+1 on the
+// production fan-out path.
+type BlockedViewerProvider interface {
+	OwnersBlockingViewers(ctx context.Context, ownerUserIDs, viewerUserIDs []int64) (map[int64]map[int64]bool, error)
+}
+
 // BatchPrivacyEvaluator 批量评估多 owner 对单 viewer 的可见性，消除 projectBatch / fan-out
 // 投影里 per-user 3×CanSee 的 N+1。可选：实现了它的 evaluator（privacy.Service）会被
 // projectBatch 优先用批量预取，否则回退逐 CanSee。结果必须与逐 CanSee 字节等价。
@@ -159,6 +170,7 @@ func (p *Projector) ForViewers(ctx context.Context, viewerUserIDs []int64, users
 		profileRefs       map[int64]domain.ProfilePhotoRef
 		fallbackRefs      map[int64]domain.ProfilePhotoRef
 		contactsByViewer  map[int64]map[int64]domain.Contact
+		blockedByViewer   map[int64]map[int64]bool
 		matrix            map[int64]map[int64]map[domain.PrivacyKey]bool
 		freezes           map[int64]domain.AccountFreeze
 		collectiblePhones map[int64]domain.CollectiblePhone
@@ -177,6 +189,13 @@ func (p *Projector) ForViewers(ctx context.Context, viewerUserIDs []int64, users
 		contactsByViewer, err = p.reverseContactsByViewer(gctx, ids, viewers)
 		return err
 	})
+	if p.contacts != nil {
+		g.Go(func() error {
+			var err error
+			blockedByViewer, err = ownersBlockingViewers(gctx, p.contacts, ids, viewers)
+			return err
+		})
+	}
 	// 3) privacy 可见性矩阵：O(owner) 查询；nil（无 MatrixPrivacyEvaluator）时 applyPrivacy 回退逐 CanSee。
 	if me, ok := p.privacy.(MatrixPrivacyEvaluator); ok && p.privacy != nil {
 		g.Go(func() error {
@@ -235,6 +254,7 @@ func (p *Projector) ForViewers(ctx context.Context, viewerUserIDs []int64, users
 				if perr != nil {
 					return nil, perr
 				}
+				pj = applyBlockedViewerProjection(pj, blockedByViewer[viewer][u.ID], nil)
 			}
 			if viewer == 0 || u.ID == viewer || u.ID == domain.OfficialSystemUserID || u.Bot {
 				pj = applyCollectiblePhone(pj, collectiblePhones[u.ID])
@@ -419,6 +439,7 @@ func projectBatch(ctx context.Context, contacts store.ContactStore, photos Profi
 		fallbackRefs      = map[int64]domain.ProfilePhotoRef{}
 		personalRefs      = map[int64]domain.ProfilePhotoRef{}
 		contactsByID      map[int64]domain.Contact
+		blockedByViewer   map[int64]map[int64]bool
 		visibility        map[int64]map[domain.PrivacyKey]bool
 		freezes           map[int64]domain.AccountFreeze
 		collectiblePhones map[int64]domain.CollectiblePhone
@@ -471,6 +492,14 @@ func projectBatch(ctx context.Context, contacts store.ContactStore, photos Profi
 				return err
 			}
 			personalRefs = refs
+			return nil
+		})
+		g.Go(func() error {
+			m, err := ownersBlockingViewers(gctx, contacts, ids, []int64{viewerUserID})
+			if err != nil {
+				return err
+			}
+			blockedByViewer = m
 			return nil
 		})
 	}
@@ -531,6 +560,7 @@ func projectBatch(ctx context.Context, contacts store.ContactStore, photos Profi
 			if err != nil {
 				return nil, err
 			}
+			projected = applyBlockedViewerProjection(projected, blockedByViewer[viewerUserID][u.ID], personalRefs)
 		}
 		if viewerUserID == 0 || u.ID == viewerUserID || u.ID == domain.OfficialSystemUserID || u.Bot {
 			projected = applyCollectiblePhone(projected, collectiblePhones[u.ID])
@@ -541,6 +571,55 @@ func projectBatch(ctx context.Context, contacts store.ContactStore, photos Profi
 		out[i] = projected
 	}
 	return out, nil
+}
+
+func ownersBlockingViewers(ctx context.Context, contacts store.ContactStore, ownerUserIDs, viewerUserIDs []int64) (map[int64]map[int64]bool, error) {
+	out := make(map[int64]map[int64]bool, len(viewerUserIDs))
+	if contacts == nil || len(ownerUserIDs) == 0 || len(viewerUserIDs) == 0 {
+		return out, nil
+	}
+	if batch, ok := contacts.(BlockedViewerProvider); ok {
+		return batch.OwnersBlockingViewers(ctx, ownerUserIDs, viewerUserIDs)
+	}
+	// Compatibility fallback for small test/adaptor stores that only implement
+	// ContactStore. Production stores implement the batch interface above.
+	for _, viewerID := range dedupNonZeroInt64(viewerUserIDs) {
+		for _, ownerID := range dedupNonZeroInt64(ownerUserIDs) {
+			if ownerID == viewerID {
+				continue
+			}
+			blocked, err := contacts.IsBlocked(ctx, ownerID, viewerID)
+			if err != nil {
+				return nil, err
+			}
+			if blocked {
+				if out[viewerID] == nil {
+					out[viewerID] = make(map[int64]bool)
+				}
+				out[viewerID][ownerID] = true
+			}
+		}
+	}
+	return out, nil
+}
+
+// applyBlockedViewerProjection implements Telegram's main-blocklist profile
+// contract. The blocked viewer sees no owner-supplied profile/fallback photo
+// and always receives "last seen a long time ago". A personal contact photo is
+// viewer-owned data, so it remains visible.
+func applyBlockedViewerProjection(user domain.User, blocked bool, personalRefs map[int64]domain.ProfilePhotoRef) domain.User {
+	if !blocked || user.Deleted {
+		return user
+	}
+	user.Status = domain.UserStatus{Kind: domain.UserStatusLastMonth}
+	user.LastSeenAt = 0
+	if ref, ok := personalRefs[user.ID]; ok && ref.PhotoID != 0 {
+		ref.Personal = true
+		applyPhotoRef(&user, ref)
+		return user
+	}
+	clearPhoto(&user)
+	return user
 }
 
 func applyCollectiblePhone(user domain.User, phone domain.CollectiblePhone) domain.User {

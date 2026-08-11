@@ -342,6 +342,13 @@ func (c *CachedContactStore) IsBlocked(ctx context.Context, userID, blockedUserI
 	return c.inner.IsBlocked(ctx, userID, blockedUserID)
 }
 
+func (c *CachedContactStore) OwnersBlockingViewers(ctx context.Context, ownerUserIDs, viewerUserIDs []int64) (map[int64]map[int64]bool, error) {
+	if batch, ok := c.inner.(BlockedViewerProvider); ok {
+		return batch.OwnersBlockingViewers(ctx, ownerUserIDs, viewerUserIDs)
+	}
+	return ownersBlockingViewers(ctx, c.inner, ownerUserIDs, viewerUserIDs)
+}
+
 func (c *CachedContactStore) ListBlocked(ctx context.Context, userID int64, offset, limit int) (domain.BlockedContactList, error) {
 	return c.inner.ListBlocked(ctx, userID, offset, limit)
 }

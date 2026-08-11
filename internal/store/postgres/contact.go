@@ -803,6 +803,37 @@ SELECT EXISTS (
 	return blocked, nil
 }
 
+func (s *ContactStore) OwnersBlockingViewers(ctx context.Context, ownerUserIDs, viewerUserIDs []int64) (map[int64]map[int64]bool, error) {
+	out := make(map[int64]map[int64]bool, len(viewerUserIDs))
+	if len(ownerUserIDs) == 0 || len(viewerUserIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT owner_user_id, blocked_user_id
+FROM contact_blocks
+WHERE owner_user_id = ANY($1::bigint[])
+  AND blocked_user_id = ANY($2::bigint[])
+ORDER BY blocked_user_id, owner_user_id`, ownerUserIDs, viewerUserIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list owners blocking viewers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ownerID, viewerID int64
+		if err := rows.Scan(&ownerID, &viewerID); err != nil {
+			return nil, fmt.Errorf("scan owner blocking viewer: %w", err)
+		}
+		if out[viewerID] == nil {
+			out[viewerID] = make(map[int64]bool)
+		}
+		out[viewerID][ownerID] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate owners blocking viewers: %w", err)
+	}
+	return out, nil
+}
+
 func (s *ContactStore) ListBlocked(ctx context.Context, userID int64, offset, limit int) (domain.BlockedContactList, error) {
 	if userID == 0 {
 		return domain.BlockedContactList{}, nil

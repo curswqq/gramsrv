@@ -7,7 +7,9 @@ import (
 	"github.com/iamxvbaba/td/clock"
 	"go.uber.org/zap/zaptest"
 
+	appcontacts "telesrv/internal/app/contacts"
 	"telesrv/internal/domain"
+	"telesrv/internal/store/memory"
 )
 
 type userFullBatchPrivacy struct {
@@ -118,5 +120,61 @@ func TestBuildUserFullProjectionSelfSkipsPrivacyEvaluation(t *testing.T) {
 	}
 	if privacy.batchCalls != 0 || privacy.scalarCalls != 0 || full.About != "self" {
 		t.Fatalf("self projection calls=%d/%d full=%+v", privacy.batchCalls, privacy.scalarCalls, full)
+	}
+}
+
+func TestBuildUserFullProjectionSuppressesOwnerPhotosAndCallsForBlockedViewer(t *testing.T) {
+	ctx := context.Background()
+	const (
+		ownerID  int64 = 3001
+		viewerID int64 = 3002
+	)
+	contactsStore := memory.NewContactStore()
+	if _, err := contactsStore.Block(ctx, ownerID, viewerID, 100); err != nil {
+		t.Fatal(err)
+	}
+	files := &fakeFiles{
+		photos: map[int64]domain.Photo{
+			9401: {ID: 9401, AccessHash: 1, DCID: 2, Sizes: fakeAvatarStaticSizes()},
+			9402: {ID: 9402, AccessHash: 2, DCID: 3, Sizes: fakeAvatarStaticSizes()},
+		},
+		profile: map[fakeProfilePhotoKey]int64{
+			{ownerType: domain.PeerTypeUser, ownerID: ownerID, kind: domain.ProfilePhotoKindProfile}:  9401,
+			{ownerType: domain.PeerTypeUser, ownerID: ownerID, kind: domain.ProfilePhotoKindFallback}: 9402,
+		},
+	}
+	r := New(Config{}, Deps{
+		Contacts: appcontacts.NewService(contactsStore, memory.NewUserStore()),
+		Files:    files,
+		Privacy:  stubPrivacy{},
+	}, zaptest.NewLogger(t), clock.System)
+
+	full, err := r.buildUserFullProjection(ctx, viewerID, domain.User{ID: ownerID, FirstName: "Owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := full.GetProfilePhoto(); ok {
+		t.Fatal("blocked viewer received owner profile photo")
+	}
+	if _, ok := full.GetFallbackPhoto(); ok {
+		t.Fatal("blocked viewer received owner fallback photo")
+	}
+	if full.PhoneCallsAvailable || full.VideoCallsAvailable || !full.PhoneCallsPrivate || !full.VoiceMessagesForbidden {
+		t.Fatalf("blocked call projection = %+v", full)
+	}
+
+	if _, err := contactsStore.Unblock(ctx, ownerID, viewerID); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := r.buildUserFullProjection(ctx, viewerID, domain.User{ID: ownerID, FirstName: "Owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	photo, ok := restored.GetProfilePhoto()
+	if !ok || photo.GetID() != 9401 {
+		t.Fatalf("restored profile photo = %#v, %v", photo, ok)
+	}
+	if !restored.PhoneCallsAvailable || !restored.VideoCallsAvailable || restored.PhoneCallsPrivate || restored.VoiceMessagesForbidden {
+		t.Fatalf("restored call projection = %+v", restored)
 	}
 }

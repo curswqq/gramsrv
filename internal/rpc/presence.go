@@ -747,15 +747,17 @@ type matrixPrivacyEvaluator interface {
 	CanSeeMatrix(ctx context.Context, ownerUserIDs, viewerUserIDs []int64, keys []domain.PrivacyKey) (map[int64]map[int64]map[domain.PrivacyKey]bool, error)
 }
 
+type blockedViewerMatrixProvider interface {
+	OwnersBlockingViewers(ctx context.Context, ownerUserIDs, viewerUserIDs []int64) (map[int64]map[int64]bool, error)
+}
+
 func (r *Router) statusTimestampVisibleToViewer(ctx context.Context, ownerUserIDs []int64, viewerUserID int64) map[int64]bool {
 	out := make(map[int64]bool, len(ownerUserIDs))
 	if r.deps.Privacy == nil {
 		for _, ownerID := range ownerUserIDs {
 			out[ownerID] = true
 		}
-		return out
-	}
-	if batch, ok := r.deps.Privacy.(batchPrivacyEvaluator); ok {
+	} else if batch, ok := r.deps.Privacy.(batchPrivacyEvaluator); ok {
 		visibility, err := batch.CanSeeBatch(ctx, ownerUserIDs, viewerUserID, []domain.PrivacyKey{domain.PrivacyKeyStatusTimestamp})
 		if err != nil {
 			r.log.Warn("evaluate status privacy batch", zap.Int64("viewer_user_id", viewerUserID), zap.Error(err))
@@ -764,12 +766,18 @@ func (r *Router) statusTimestampVisibleToViewer(ctx context.Context, ownerUserID
 		for _, ownerID := range ownerUserIDs {
 			out[ownerID] = visibility[ownerID][domain.PrivacyKeyStatusTimestamp]
 		}
-		return out
+	} else {
+		for _, ownerID := range ownerUserIDs {
+			allowed, err := r.deps.Privacy.CanSee(ctx, ownerID, viewerUserID, domain.PrivacyKeyStatusTimestamp)
+			if err == nil {
+				out[ownerID] = allowed
+			}
+		}
 	}
+	blocked := r.blockedViewerFacts(ctx, ownerUserIDs, []int64{viewerUserID})
 	for _, ownerID := range ownerUserIDs {
-		allowed, err := r.deps.Privacy.CanSee(ctx, ownerID, viewerUserID, domain.PrivacyKeyStatusTimestamp)
-		if err == nil {
-			out[ownerID] = allowed
+		if blocked[viewerUserID][ownerID] {
+			out[ownerID] = false
 		}
 	}
 	return out
@@ -781,9 +789,7 @@ func (r *Router) statusTimestampVisibleToViewers(ctx context.Context, ownerUserI
 		for _, viewerID := range viewerUserIDs {
 			out[viewerID] = true
 		}
-		return out
-	}
-	if matrix, ok := r.deps.Privacy.(matrixPrivacyEvaluator); ok {
+	} else if matrix, ok := r.deps.Privacy.(matrixPrivacyEvaluator); ok {
 		visibility, err := matrix.CanSeeMatrix(ctx, []int64{ownerUserID}, viewerUserIDs, []domain.PrivacyKey{domain.PrivacyKeyStatusTimestamp})
 		if err != nil {
 			r.log.Warn("evaluate status privacy matrix", zap.Int64("owner_user_id", ownerUserID), zap.Error(err))
@@ -792,12 +798,64 @@ func (r *Router) statusTimestampVisibleToViewers(ctx context.Context, ownerUserI
 		for _, viewerID := range viewerUserIDs {
 			out[viewerID] = visibility[ownerUserID][viewerID][domain.PrivacyKeyStatusTimestamp]
 		}
+	} else {
+		for _, viewerID := range viewerUserIDs {
+			allowed, err := r.deps.Privacy.CanSee(ctx, ownerUserID, viewerID, domain.PrivacyKeyStatusTimestamp)
+			if err == nil {
+				out[viewerID] = allowed
+			}
+		}
+	}
+	blocked := r.blockedViewerFacts(ctx, []int64{ownerUserID}, viewerUserIDs)
+	for _, viewerID := range viewerUserIDs {
+		if blocked[viewerID][ownerUserID] {
+			out[viewerID] = false
+		}
+	}
+	return out
+}
+
+func (r *Router) blockedViewerFacts(ctx context.Context, ownerUserIDs, viewerUserIDs []int64) map[int64]map[int64]bool {
+	out := make(map[int64]map[int64]bool, len(viewerUserIDs))
+	if r.deps.Contacts == nil || len(ownerUserIDs) == 0 || len(viewerUserIDs) == 0 {
+		return out
+	}
+	if batch, ok := r.deps.Contacts.(blockedViewerMatrixProvider); ok {
+		facts, err := batch.OwnersBlockingViewers(ctx, ownerUserIDs, viewerUserIDs)
+		if err == nil {
+			return facts
+		}
+		r.log.Warn("load blocked viewers for presence", zap.Error(err))
+		// Fail closed below: a transient block-store failure must not leak exact
+		// presence to a viewer whose relationship cannot be established.
+		for _, viewerID := range viewerUserIDs {
+			for _, ownerID := range ownerUserIDs {
+				if viewerID == 0 || ownerID == 0 || viewerID == ownerID {
+					continue
+				}
+				if out[viewerID] == nil {
+					out[viewerID] = make(map[int64]bool)
+				}
+				out[viewerID][ownerID] = true
+			}
+		}
 		return out
 	}
 	for _, viewerID := range viewerUserIDs {
-		allowed, err := r.deps.Privacy.CanSee(ctx, ownerUserID, viewerID, domain.PrivacyKeyStatusTimestamp)
-		if err == nil {
-			out[viewerID] = allowed
+		for _, ownerID := range ownerUserIDs {
+			if viewerID == 0 || ownerID == 0 || viewerID == ownerID {
+				continue
+			}
+			blocked, err := r.deps.Contacts.IsBlocked(ctx, ownerID, viewerID)
+			if err != nil {
+				blocked = true
+			}
+			if blocked {
+				if out[viewerID] == nil {
+					out[viewerID] = make(map[int64]bool)
+				}
+				out[viewerID][ownerID] = true
+			}
 		}
 	}
 	return out
@@ -816,12 +874,15 @@ func (r *Router) pushStatusPrivacyRefresh(ctx context.Context, ownerUserID int64
 		}
 	}
 	coarse := domain.ApproximateUserStatus(exact.WasOnline, int(r.clock.Now().Unix()))
+	blocked := r.blockedViewerFacts(ctx, []int64{ownerUserID}, recipients)
 	for _, recipientID := range recipients {
 		if recipientID == 0 || recipientID == ownerUserID {
 			continue
 		}
 		status := coarse
-		if visible[recipientID] {
+		if blocked[recipientID][ownerUserID] {
+			status = domain.UserStatus{Kind: domain.UserStatusLastMonth}
+		} else if visible[recipientID] {
 			status = exact
 		}
 		r.pushUserMessageTransient(ctx, recipientID, "push status privacy refresh", &tg.Updates{

@@ -294,17 +294,15 @@ func (r *Router) onContactsBlock(ctx context.Context, req *tg.ContactsBlockReque
 		return false, contactErr(err)
 	}
 	if !wasBlocked {
-		if err := r.recordPeerStoryBlocked(ctx, userID, peer, true); err != nil {
-			return false, internalErr()
-		}
-		if err := r.fanoutStoryBlocklistChange(ctx, userID, peer.ID, true); err != nil {
+		if err := r.applyContactBlocklistChange(ctx, userID, peer, true); err != nil {
 			return false, err
 		}
+	} else {
+		if settings, err := r.deps.Contacts.GetPeerSettings(ctx, userID, peer); err == nil {
+			_ = r.recordPeerSettings(ctx, userID, peer, settings)
+		}
+		r.invalidateRPCProjectionForViewer(userID)
 	}
-	if settings, err := r.deps.Contacts.GetPeerSettings(ctx, userID, peer); err == nil {
-		_ = r.recordPeerSettings(ctx, userID, peer, settings)
-	}
-	r.invalidateRPCProjectionForViewer(userID)
 	return true, nil
 }
 
@@ -328,17 +326,15 @@ func (r *Router) onContactsUnblock(ctx context.Context, req *tg.ContactsUnblockR
 		return false, contactErr(err)
 	}
 	if wasBlocked {
-		if err := r.recordPeerStoryBlocked(ctx, userID, peer, false); err != nil {
-			return false, internalErr()
-		}
-		if err := r.fanoutStoryBlocklistChange(ctx, userID, peer.ID, false); err != nil {
+		if err := r.applyContactBlocklistChange(ctx, userID, peer, false); err != nil {
 			return false, err
 		}
+	} else {
+		if settings, err := r.deps.Contacts.GetPeerSettings(ctx, userID, peer); err == nil {
+			_ = r.recordPeerSettings(ctx, userID, peer, settings)
+		}
+		r.invalidateRPCProjectionForViewer(userID)
 	}
-	if settings, err := r.deps.Contacts.GetPeerSettings(ctx, userID, peer); err == nil {
-		_ = r.recordPeerSettings(ctx, userID, peer, settings)
-	}
-	r.invalidateRPCProjectionForViewer(userID)
 	return true, nil
 }
 
@@ -405,7 +401,6 @@ func (r *Router) onContactsSetBlocked(ctx context.Context, req *tg.ContactsSetBl
 			}
 		}
 	}
-	r.invalidateRPCProjectionForViewer(userID)
 	return true, nil
 }
 
@@ -448,7 +443,50 @@ func (r *Router) applyContactBlocklistChange(ctx context.Context, userID int64, 
 			_ = r.recordPeerSettings(ctx, userID, peer, settings)
 		}
 	}
+	// Both directions cache different facts: the owner sees blocked=true in
+	// UserFull, while the peer sees the owner's masked public projection.
+	r.invalidateRPCProjectionForViewer(userID)
+	r.invalidateRPCProjectionForViewer(peer.ID)
+	r.invalidateStoryProjectionCache(peer.ID, domain.Peer{Type: domain.PeerTypeUser, ID: userID})
+	r.pushBlockProjectionRefresh(ctx, userID, peer.ID)
 	return nil
+}
+
+// pushBlockProjectionRefresh makes the newly masked/restored user shape visible
+// to every active session of the blocked peer immediately. The relation itself
+// is durable, so offline clients obtain the same projection on their next read.
+// updatePeerBlocked is intentionally not sent to this peer: that update belongs
+// only to the user who owns the blocklist.
+func (r *Router) pushBlockProjectionRefresh(ctx context.Context, ownerUserID, viewerUserID int64) {
+	if r.deps.Users == nil || ownerUserID == 0 || viewerUserID == 0 || ownerUserID == viewerUserID {
+		return
+	}
+	u, found, err := r.deps.Users.ByID(ctx, viewerUserID, ownerUserID)
+	if err != nil || !found {
+		if err != nil {
+			r.log.Warn("project blocklist user refresh",
+				zap.Int64("owner_user_id", ownerUserID),
+				zap.Int64("viewer_user_id", viewerUserID),
+				zap.Error(err))
+		}
+		return
+	}
+	users := []tg.UserClass{r.tgUser(u)}
+	r.applyPeerReadModels(ctx, viewerUserID, users, nil)
+	wireStatus := tgUserStatus(u.Status)
+	if projected, ok := users[0].(*tg.User); ok && projected.Status != nil {
+		wireStatus = projected.Status
+	}
+	updates := &tg.Updates{
+		Updates: []tg.UpdateClass{
+			&tg.UpdateUser{UserID: ownerUserID},
+			&tg.UpdateUserStatus{UserID: ownerUserID, Status: wireStatus},
+		},
+		Users: users,
+		Date:  int(r.clock.Now().Unix()),
+		Seq:   0,
+	}
+	r.pushUserMessageTransient(ctx, viewerUserID, "push blocklist user projection", updates)
 }
 
 func (r *Router) onContactsGetBlocked(ctx context.Context, req *tg.ContactsGetBlockedRequest) (tg.ContactsBlockedClass, error) {

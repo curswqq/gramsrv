@@ -148,6 +148,104 @@ func TestProjectorPersonalPhotoWinsOverProfile(t *testing.T) {
 	}
 }
 
+func TestProjectorMainBlockMasksOwnerForBlockedViewer(t *testing.T) {
+	ctx := context.Background()
+	const (
+		ownerID       int64 = 2201
+		blockedViewer int64 = 2202
+		otherViewer   int64 = 2203
+	)
+	contacts := memory.NewContactStore()
+	if _, err := contacts.Block(ctx, ownerID, blockedViewer, 100); err != nil {
+		t.Fatalf("block viewer: %v", err)
+	}
+	projector := New(
+		WithContactStore(contacts),
+		WithPhotoProvider(fakeProfilePhotos{
+			profile:  map[int64]domain.ProfilePhotoRef{ownerID: {PhotoID: 9201, DCID: 2, Stripped: []byte{1}}},
+			fallback: map[int64]domain.ProfilePhotoRef{ownerID: {PhotoID: 9202, DCID: 3, Stripped: []byte{2}}},
+		}),
+	)
+	base := []domain.User{{
+		ID:           ownerID,
+		FirstName:    "Owner",
+		Verified:     true,
+		PremiumUntil: 2000000000,
+		LastSeenAt:   123456,
+		Status:       domain.UserStatus{Kind: domain.UserStatusOnline, Expires: 2000000000},
+	}}
+
+	blockedView, err := projector.ForViewer(ctx, blockedViewer, base)
+	if err != nil {
+		t.Fatalf("ForViewer(blocked): %v", err)
+	}
+	blocked := projectionUser(t, blockedView, ownerID)
+	if blocked.PhotoID != 0 || blocked.PhotoDCID != 0 || len(blocked.PhotoStripped) != 0 {
+		t.Fatalf("blocked photo = id %d dc %d stripped %v, want hidden", blocked.PhotoID, blocked.PhotoDCID, blocked.PhotoStripped)
+	}
+	if blocked.Status.Kind != domain.UserStatusLastMonth || blocked.LastSeenAt != 0 {
+		t.Fatalf("blocked presence = %+v last_seen=%d, want last-month/0", blocked.Status, blocked.LastSeenAt)
+	}
+	if !blocked.Verified || blocked.PremiumUntil == 0 {
+		t.Fatalf("block masked public identity flags: %+v", blocked)
+	}
+
+	fanout, err := projector.ForViewers(ctx, []int64{blockedViewer, otherViewer}, base)
+	if err != nil {
+		t.Fatalf("ForViewers: %v", err)
+	}
+	if got := projectionUser(t, fanout[blockedViewer], ownerID); got.PhotoID != 0 || got.Status.Kind != domain.UserStatusLastMonth {
+		t.Fatalf("blocked fanout projection = %+v", got)
+	}
+	if got := projectionUser(t, fanout[otherViewer], ownerID); got.PhotoID != 9201 || got.Status.Kind != domain.UserStatusOnline {
+		t.Fatalf("unblocked fanout projection = %+v", got)
+	}
+
+	if _, err := contacts.Unblock(ctx, ownerID, blockedViewer); err != nil {
+		t.Fatalf("unblock viewer: %v", err)
+	}
+	restoredView, err := projector.ForViewer(ctx, blockedViewer, base)
+	if err != nil {
+		t.Fatalf("ForViewer(restored): %v", err)
+	}
+	restored := projectionUser(t, restoredView, ownerID)
+	if restored.PhotoID != 9201 || restored.Status.Kind != domain.UserStatusOnline || restored.LastSeenAt != 123456 {
+		t.Fatalf("restored projection = %+v", restored)
+	}
+}
+
+func TestProjectorMainBlockPreservesViewerPersonalPhoto(t *testing.T) {
+	ctx := context.Background()
+	const (
+		ownerID  int64 = 2301
+		viewerID int64 = 2302
+	)
+	contacts := memory.NewContactStore()
+	if _, err := contacts.Upsert(ctx, viewerID, domain.ContactInput{ContactUserID: ownerID, FirstName: "Owner"}); err != nil {
+		t.Fatalf("upsert contact: %v", err)
+	}
+	if _, found, err := contacts.SetPersonalPhoto(ctx, viewerID, ownerID, 9301, 100); err != nil || !found {
+		t.Fatalf("set personal photo: %v", err)
+	}
+	if _, err := contacts.Block(ctx, ownerID, viewerID, 101); err != nil {
+		t.Fatalf("block viewer: %v", err)
+	}
+	projector := New(
+		WithContactStore(contacts),
+		WithPhotoProvider(fakeProfilePhotos{profile: map[int64]domain.ProfilePhotoRef{ownerID: {PhotoID: 9302, DCID: 2}}}),
+	)
+	projected, err := projector.ForViewer(ctx, viewerID, []domain.User{{
+		ID: ownerID, Status: domain.UserStatus{Kind: domain.UserStatusOnline}, LastSeenAt: 123,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := projectionUser(t, projected, ownerID)
+	if got.PhotoID != 9301 || !got.PhotoPersonal || got.Status.Kind != domain.UserStatusLastMonth {
+		t.Fatalf("blocked personal-photo projection = %+v", got)
+	}
+}
+
 func TestProjectorUsesFallbackWhenProfilePhotoHidden(t *testing.T) {
 	ctx := context.Background()
 	const viewerID int64 = 3001
