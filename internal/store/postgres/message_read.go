@@ -262,30 +262,29 @@ func (s *MessageStore) GetOutboxReadDate(ctx context.Context, req domain.OutboxR
 	if req.OwnerUserID == 0 || req.Peer.Type != domain.PeerTypeUser || req.Peer.ID == 0 || req.ID <= 0 || req.ID > domain.MaxMessageBoxID {
 		return 0, domain.ErrMessageIDInvalid
 	}
-	if _, err := s.q.GetOutboxMessageForReadDate(ctx, sqlcgen.GetOutboxMessageForReadDateParams{
+	msg, err := s.q.GetOutboxMessageForReadDate(ctx, sqlcgen.GetOutboxMessageForReadDateParams{
 		OwnerUserID: req.OwnerUserID,
 		PeerType:    string(req.Peer.Type),
 		PeerID:      req.Peer.ID,
 		BoxID:       int32(req.ID),
-	}); err != nil {
+	})
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, domain.ErrMessageIDInvalid
 		}
 		return 0, fmt.Errorf("get outbox message for read date: %w", err)
 	}
-	date, err := s.q.GetOutboxReadDate(ctx, sqlcgen.GetOutboxReadDateParams{
-		UserID:    req.OwnerUserID,
-		PeerType:  string(req.Peer.Type),
-		PeerID:    req.Peer.ID,
-		MessageID: int32(req.ID),
-	})
-	if err != nil {
-		return 0, fmt.Errorf("get outbox read date: %w", err)
+	now := req.Now
+	if now == 0 {
+		now = int(time.Now().Unix())
 	}
-	if date == 0 {
+	if msg.MessageDate > 0 && int(msg.MessageDate) < now-domain.PrivateMessageReadDateExpirePeriod {
+		return 0, domain.ErrMessageTooOld
+	}
+	if msg.OutboxReadDate == 0 {
 		return 0, domain.ErrMessageNotReadYet
 	}
-	return int(date), nil
+	return int(msg.OutboxReadDate), nil
 }
 
 type deletedUnreadMessages map[deletedOwnerPeerKey]map[int]struct{}

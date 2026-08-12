@@ -8,6 +8,7 @@ var (
 	ErrMessageAuthorRequired = errors.New("message author required")
 	ErrMessageNotModified    = errors.New("message not modified")
 	ErrMessageNotReadYet     = errors.New("message not read yet")
+	ErrMessageTooOld         = errors.New("message too old")
 	// ErrMessageRandomIDDuplicate 表示同一发送者重复使用 random_id，且本次
 	// 不可变请求载荷与首次成功发送不一致。完全相同的重放不返回此错误，
 	// 而是复用首次发送结果。

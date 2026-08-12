@@ -1311,8 +1311,19 @@ WHERE user_id = sqlc.arg(user_id)::bigint
   AND read_outbox_max_id < sqlc.arg(read_outbox_max_id)::int
 RETURNING read_outbox_max_id;
 
+-- name: MarkPrivateOutboxMessagesRead :exec
+UPDATE message_boxes
+SET outbox_read_date = sqlc.arg(read_date)::int
+WHERE owner_user_id = sqlc.arg(owner_user_id)::bigint
+  AND peer_type = 'user'
+  AND peer_id = sqlc.arg(peer_user_id)::bigint
+  AND outgoing
+  AND NOT deleted
+  AND box_id <= sqlc.arg(read_outbox_max_id)::int
+  AND outbox_read_date = 0;
+
 -- name: GetOutboxMessageForReadDate :one
-SELECT box_id
+SELECT box_id, message_date, outbox_read_date
 FROM message_boxes
 WHERE owner_user_id = sqlc.arg(owner_user_id)::bigint
   AND peer_type = sqlc.arg(peer_type)::text
@@ -1321,15 +1332,6 @@ WHERE owner_user_id = sqlc.arg(owner_user_id)::bigint
   AND outgoing
   AND NOT deleted
 LIMIT 1;
-
--- name: GetOutboxReadDate :one
-SELECT COALESCE(MIN(date), 0)::int AS read_date
-FROM user_update_events
-WHERE user_id = sqlc.arg(user_id)::bigint
-  AND event_type = 'read_history_outbox'
-  AND peer_type = sqlc.arg(peer_type)::text
-  AND peer_id = sqlc.arg(peer_id)::bigint
-  AND max_id >= sqlc.arg(message_id)::int;
 
 -- name: DeleteMessageBoxesByIDs :many
 WITH updated AS (

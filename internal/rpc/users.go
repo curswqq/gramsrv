@@ -431,6 +431,7 @@ func (r *Router) buildUserFullProjection(ctx context.Context, currentUserID int6
 		if err != nil {
 			return tg.UserFull{}, internalErr()
 		}
+		full.SetReadDatesPrivate(settings.GlobalPrivacy.HideReadMarks)
 		gifts := settings.GlobalPrivacy.DisallowedGifts
 		if !gifts.Zero() {
 			full.SetDisallowedGifts(tg.DisallowedGiftsSettings{

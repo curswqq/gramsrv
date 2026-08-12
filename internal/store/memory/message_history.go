@@ -180,18 +180,18 @@ func (s *MessageStore) ReadHistory(_ context.Context, req domain.ReadHistoryRequ
 					if senderDialog.Peer != (domain.Peer{Type: domain.PeerTypeUser, ID: req.OwnerUserID}) {
 						continue
 					}
+					for _, msg := range s.m[senderUserID] {
+						key := readOutboxDateKey{ownerUserID: senderUserID, peerID: req.OwnerUserID, msgID: msg.ID}
+						if msg.Peer == senderDialog.Peer && msg.Out && msg.ID <= senderBoxID && s.readOutboxDates[key] == 0 {
+							s.readOutboxDates[key] = req.Date
+						}
+					}
 					if senderBoxID <= senderDialog.ReadOutboxMaxID {
 						break
 					}
-					oldOutbox := senderDialog.ReadOutboxMaxID
 					senderDialog.ReadOutboxMaxID = senderBoxID
 					senderList.Dialogs[j] = senderDialog
 					s.dialogs.m[senderUserID] = senderList
-					for _, msg := range s.m[senderUserID] {
-						if msg.Peer == (domain.Peer{Type: domain.PeerTypeUser, ID: req.OwnerUserID}) && msg.Out && msg.ID > oldOutbox && msg.ID <= senderBoxID {
-							s.readOutboxDates[readOutboxDateKey{ownerUserID: senderUserID, peerID: req.OwnerUserID, msgID: msg.ID}] = req.Date
-						}
-					}
 					outPts := s.nextPtsLocked(senderUserID)
 					res.OutboxChanged = true
 					res.OutboxUserID = senderUserID

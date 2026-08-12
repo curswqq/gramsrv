@@ -631,6 +631,14 @@ func TestMessageStoreReadHistoryEmitsInboxAndOutboxReceipts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendPrivateText: %v", err)
 	}
+	if _, err := messages.GetOutboxReadDate(ctx, domain.OutboxReadDateRequest{
+		OwnerUserID: senderID,
+		Peer:        domain.Peer{Type: domain.PeerTypeUser, ID: recipientID},
+		ID:          sent.SenderMessage.ID,
+		Now:         1700000101,
+	}); !errors.Is(err, domain.ErrMessageNotReadYet) {
+		t.Fatalf("unread outbox read date err=%v, want ErrMessageNotReadYet", err)
+	}
 
 	read, err := messages.ReadHistory(ctx, domain.ReadHistoryRequest{
 		OwnerUserID: recipientID,
@@ -650,9 +658,19 @@ func TestMessageStoreReadHistoryEmitsInboxAndOutboxReceipts(t *testing.T) {
 		OwnerUserID: senderID,
 		Peer:        domain.Peer{Type: domain.PeerTypeUser, ID: recipientID},
 		ID:          sent.SenderMessage.ID,
+		Now:         1700000201,
 	})
 	if err != nil || date != 1700000200 {
 		t.Fatalf("outbox read date = %d err=%v, want read date", date, err)
+	}
+	_, err = messages.GetOutboxReadDate(ctx, domain.OutboxReadDateRequest{
+		OwnerUserID: senderID,
+		Peer:        domain.Peer{Type: domain.PeerTypeUser, ID: recipientID},
+		ID:          sent.SenderMessage.ID,
+		Now:         sent.SenderMessage.Date + domain.PrivateMessageReadDateExpirePeriod + 1,
+	})
+	if !errors.Is(err, domain.ErrMessageTooOld) {
+		t.Fatalf("expired outbox read date err=%v, want ErrMessageTooOld", err)
 	}
 }
 

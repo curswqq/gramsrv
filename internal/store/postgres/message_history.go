@@ -445,6 +445,14 @@ func (s *MessageStore) ReadHistory(ctx context.Context, req domain.ReadHistoryRe
 	}
 
 	if candidateErr == nil && candidate.SenderOwnerUserID != 0 && int(candidate.SenderBoxID) > 0 {
+		if err := qtx.MarkPrivateOutboxMessagesRead(ctx, sqlcgen.MarkPrivateOutboxMessagesReadParams{
+			ReadDate:        int32(req.Date),
+			OwnerUserID:     candidate.SenderOwnerUserID,
+			PeerUserID:      req.OwnerUserID,
+			ReadOutboxMaxID: candidate.SenderBoxID,
+		}); err != nil {
+			return res, fmt.Errorf("persist private outbox read dates: %w", err)
+		}
 		if _, err := qtx.UpdateDialogReadOutbox(ctx, sqlcgen.UpdateDialogReadOutboxParams{
 			UserID:          candidate.SenderOwnerUserID,
 			PeerType:        string(domain.PeerTypeUser),

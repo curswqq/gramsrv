@@ -38,6 +38,7 @@ type captureMessages struct {
 	editRes           domain.EditMessageResult
 	outboxReadDateReq domain.OutboxReadDateRequest
 	outboxReadDate    int
+	outboxReadDateErr error
 	deleteMessagesReq domain.DeleteMessagesRequest
 	deleteMessagesRes domain.DeleteMessagesResult
 	deleteHistoryReq  domain.DeleteHistoryRequest
@@ -429,6 +430,9 @@ func (s *captureMessages) ReadMessageContents(_ context.Context, userID int64, r
 
 func (s *captureMessages) GetOutboxReadDate(_ context.Context, _ int64, req domain.OutboxReadDateRequest) (int, error) {
 	s.outboxReadDateReq = req
+	if s.outboxReadDateErr != nil {
+		return 0, s.outboxReadDateErr
+	}
 	if s.outboxReadDate == 0 {
 		return 0, domain.ErrMessageNotReadYet
 	}

@@ -548,7 +548,15 @@ type OutboxReadDateRequest struct {
 	OwnerUserID int64
 	Peer        Peer
 	ID          int
+	// Now is the server Unix timestamp used to enforce Telegram's
+	// pm_read_date_expire_period. Zero lets the store use its current clock.
+	Now int
 }
+
+// PrivateMessageReadDateExpirePeriod is Telegram's
+// appConfig.pm_read_date_expire_period: exact private-message read dates are
+// queryable for seven days after the message was sent.
+const PrivateMessageReadDateExpirePeriod = 7 * 24 * 60 * 60
 
 // EditMessageRequest 是账号视角下编辑一条已发送私聊消息的命令。
 // Media 非 nil 时整体替换消息媒体快照（当前唯一调用方是 live location 续报/停止，

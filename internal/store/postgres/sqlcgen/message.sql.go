@@ -1994,7 +1994,7 @@ func (q *Queries) GetMessageBoxesForForward(ctx context.Context, arg GetMessageB
 }
 
 const getOutboxMessageForReadDate = `-- name: GetOutboxMessageForReadDate :one
-SELECT box_id
+SELECT box_id, message_date, outbox_read_date
 FROM message_boxes
 WHERE owner_user_id = $1::bigint
   AND peer_type = $2::text
@@ -2012,45 +2012,22 @@ type GetOutboxMessageForReadDateParams struct {
 	BoxID       int32
 }
 
-func (q *Queries) GetOutboxMessageForReadDate(ctx context.Context, arg GetOutboxMessageForReadDateParams) (int32, error) {
+type GetOutboxMessageForReadDateRow struct {
+	BoxID          int32
+	MessageDate    int32
+	OutboxReadDate int32
+}
+
+func (q *Queries) GetOutboxMessageForReadDate(ctx context.Context, arg GetOutboxMessageForReadDateParams) (GetOutboxMessageForReadDateRow, error) {
 	row := q.db.QueryRow(ctx, getOutboxMessageForReadDate,
 		arg.OwnerUserID,
 		arg.PeerType,
 		arg.PeerID,
 		arg.BoxID,
 	)
-	var box_id int32
-	err := row.Scan(&box_id)
-	return box_id, err
-}
-
-const getOutboxReadDate = `-- name: GetOutboxReadDate :one
-SELECT COALESCE(MIN(date), 0)::int AS read_date
-FROM user_update_events
-WHERE user_id = $1::bigint
-  AND event_type = 'read_history_outbox'
-  AND peer_type = $2::text
-  AND peer_id = $3::bigint
-  AND max_id >= $4::int
-`
-
-type GetOutboxReadDateParams struct {
-	UserID    int64
-	PeerType  string
-	PeerID    int64
-	MessageID int32
-}
-
-func (q *Queries) GetOutboxReadDate(ctx context.Context, arg GetOutboxReadDateParams) (int32, error) {
-	row := q.db.QueryRow(ctx, getOutboxReadDate,
-		arg.UserID,
-		arg.PeerType,
-		arg.PeerID,
-		arg.MessageID,
-	)
-	var read_date int32
-	err := row.Scan(&read_date)
-	return read_date, err
+	var i GetOutboxMessageForReadDateRow
+	err := row.Scan(&i.BoxID, &i.MessageDate, &i.OutboxReadDate)
+	return i, err
 }
 
 const getPrivateMessageByRandomID = `-- name: GetPrivateMessageByRandomID :one
@@ -3514,6 +3491,35 @@ func (q *Queries) ListVisibleMessageBoxesByPrivateMessage(ctx context.Context, a
 		return nil, err
 	}
 	return items, nil
+}
+
+const markPrivateOutboxMessagesRead = `-- name: MarkPrivateOutboxMessagesRead :exec
+UPDATE message_boxes
+SET outbox_read_date = $1::int
+WHERE owner_user_id = $2::bigint
+  AND peer_type = 'user'
+  AND peer_id = $3::bigint
+  AND outgoing
+  AND NOT deleted
+  AND box_id <= $4::int
+  AND outbox_read_date = 0
+`
+
+type MarkPrivateOutboxMessagesReadParams struct {
+	ReadDate        int32
+	OwnerUserID     int64
+	PeerUserID      int64
+	ReadOutboxMaxID int32
+}
+
+func (q *Queries) MarkPrivateOutboxMessagesRead(ctx context.Context, arg MarkPrivateOutboxMessagesReadParams) error {
+	_, err := q.db.Exec(ctx, markPrivateOutboxMessagesRead,
+		arg.ReadDate,
+		arg.OwnerUserID,
+		arg.PeerUserID,
+		arg.ReadOutboxMaxID,
+	)
+	return err
 }
 
 const maxMessageBoxID = `-- name: MaxMessageBoxID :one

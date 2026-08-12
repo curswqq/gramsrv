@@ -6,6 +6,7 @@ import (
 	"github.com/iamxvbaba/td/clock"
 	"github.com/iamxvbaba/td/proto"
 	"github.com/iamxvbaba/td/tg"
+	"github.com/iamxvbaba/td/tgerr"
 	"go.uber.org/zap/zaptest"
 	"reflect"
 	"telesrv/internal/domain"
@@ -90,8 +91,84 @@ func TestMessagesGetOutboxReadDateReturnsDate(t *testing.T) {
 	if !ok || got.Date != 1700000300 {
 		t.Fatalf("response = %T %#v, want outboxReadDate date", enc, enc)
 	}
-	if messages.outboxReadDateReq.OwnerUserID != userID || messages.outboxReadDateReq.Peer.ID != peerID || messages.outboxReadDateReq.ID != 3 {
+	if messages.outboxReadDateReq.OwnerUserID != userID || messages.outboxReadDateReq.Peer.ID != peerID || messages.outboxReadDateReq.ID != 3 || messages.outboxReadDateReq.Now == 0 {
 		t.Fatalf("read date request = %+v, want owner peer message id", messages.outboxReadDateReq)
+	}
+}
+
+type readDateAccountSettingsStub struct {
+	AccountService
+	settings map[int64]domain.AccountSettings
+}
+
+func (s readDateAccountSettingsStub) GetAccountSettings(_ context.Context, userID int64) (domain.AccountSettings, error) {
+	return s.settings[userID], nil
+}
+
+type readDatePrivacyStub struct {
+	PrivacyService
+	allowed map[[2]int64]bool
+}
+
+func (s readDatePrivacyStub) CanSee(_ context.Context, ownerUserID, viewerUserID int64, _ domain.PrivacyKey) (bool, error) {
+	return s.allowed[[2]int64{ownerUserID, viewerUserID}], nil
+}
+
+type readDateUsersStub struct {
+	UsersService
+	premium map[int64]bool
+}
+
+func (s readDateUsersStub) PremiumActive(_ context.Context, userID int64) bool {
+	return s.premium[userID]
+}
+
+func TestMessagesGetOutboxReadDatePrivacySemantics(t *testing.T) {
+	const requester = int64(1000000101)
+	const peer = int64(1000000102)
+	hidden := domain.AccountSettings{GlobalPrivacy: domain.GlobalPrivacy{HideReadMarks: true}}
+
+	t.Run("peer hides exact read date", func(t *testing.T) {
+		r := New(Config{}, Deps{
+			Account: readDateAccountSettingsStub{settings: map[int64]domain.AccountSettings{peer: hidden}},
+			Privacy: readDatePrivacyStub{allowed: map[[2]int64]bool{}},
+		}, zaptest.NewLogger(t), clock.System)
+		err := r.enforceOutboxReadDatePrivacy(context.Background(), requester, peer)
+		if !tgerr.Is(err, "USER_PRIVACY_RESTRICTED") {
+			t.Fatalf("privacy error = %v, want USER_PRIVACY_RESTRICTED", err)
+		}
+	})
+
+	t.Run("non-premium requester cannot withhold reciprocal date", func(t *testing.T) {
+		r := New(Config{}, Deps{
+			Account: readDateAccountSettingsStub{settings: map[int64]domain.AccountSettings{requester: hidden}},
+			Privacy: readDatePrivacyStub{allowed: map[[2]int64]bool{}},
+			Users:   readDateUsersStub{premium: map[int64]bool{}},
+		}, zaptest.NewLogger(t), clock.System)
+		err := r.enforceOutboxReadDatePrivacy(context.Background(), requester, peer)
+		if !tgerr.Is(err, "YOUR_PRIVACY_RESTRICTED") {
+			t.Fatalf("privacy error = %v, want YOUR_PRIVACY_RESTRICTED", err)
+		}
+	})
+
+	t.Run("premium bypasses requester reciprocity", func(t *testing.T) {
+		r := New(Config{}, Deps{
+			Account: readDateAccountSettingsStub{settings: map[int64]domain.AccountSettings{requester: hidden}},
+			Privacy: readDatePrivacyStub{allowed: map[[2]int64]bool{}},
+			Users:   readDateUsersStub{premium: map[int64]bool{requester: true}},
+		}, zaptest.NewLogger(t), clock.System)
+		if err := r.enforceOutboxReadDatePrivacy(context.Background(), requester, peer); err != nil {
+			t.Fatalf("premium privacy error = %v, want nil", err)
+		}
+	})
+}
+
+func TestMessageReadDateErrorMapping(t *testing.T) {
+	if err := messageReadDateErr(domain.ErrMessageNotReadYet); !tgerr.Is(err, "MESSAGE_NOT_READ_YET") {
+		t.Fatalf("not-read mapping = %v", err)
+	}
+	if err := messageReadDateErr(domain.ErrMessageTooOld); !tgerr.Is(err, "MESSAGE_TOO_OLD") {
+		t.Fatalf("too-old mapping = %v", err)
 	}
 }
 

@@ -107,15 +107,22 @@ func (s *MessageStore) GetOutboxReadDate(_ context.Context, req domain.OutboxRea
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	found := false
+	var found domain.Message
 	for _, msg := range s.m[req.OwnerUserID] {
 		if msg.ID == req.ID && msg.Peer == req.Peer && msg.Out {
-			found = true
+			found = msg
 			break
 		}
 	}
-	if !found {
+	if found.ID == 0 {
 		return 0, domain.ErrMessageIDInvalid
+	}
+	now := req.Now
+	if now == 0 {
+		now = int(time.Now().Unix())
+	}
+	if found.Date > 0 && found.Date < now-domain.PrivateMessageReadDateExpirePeriod {
+		return 0, domain.ErrMessageTooOld
 	}
 	date := s.readOutboxDates[readOutboxDateKey{ownerUserID: req.OwnerUserID, peerID: req.Peer.ID, msgID: req.ID}]
 	if date == 0 {

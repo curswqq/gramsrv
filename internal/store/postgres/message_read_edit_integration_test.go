@@ -61,6 +61,7 @@ func TestMessageStoreReadAndEditEmitDurableEvents(t *testing.T) {
 		OwnerUserID: sender.ID,
 		Peer:        domain.Peer{Type: domain.PeerTypeUser, ID: recipient.ID},
 		ID:          sent.SenderMessage.ID,
+		Now:         1700000311,
 	})
 	if err != nil || readDate != 1700000310 {
 		t.Fatalf("outbox read date = %d err=%v, want read date", readDate, err)
@@ -104,6 +105,21 @@ func TestMessageStoreReadAndEditEmitDurableEvents(t *testing.T) {
 	}
 	if len(recipientEvents) != 3 || recipientEvents[1].Type != domain.UpdateEventReadHistoryInbox || recipientEvents[2].Type != domain.UpdateEventEditMessage || recipientEvents[2].Message.Body != "after edit" {
 		t.Fatalf("recipient events = %+v, want new/read_inbox/edit with edited body", recipientEvents)
+	}
+
+	// The exact read date belongs to the message row, not the disposable update
+	// journal. Retention of old updates must not make a read message unread again.
+	if _, err := pool.Exec(ctx, "DELETE FROM user_update_events WHERE user_id = $1 AND event_type = 'read_history_outbox'", sender.ID); err != nil {
+		t.Fatalf("delete read outbox journal event: %v", err)
+	}
+	readDate, err = messages.GetOutboxReadDate(ctx, domain.OutboxReadDateRequest{
+		OwnerUserID: sender.ID,
+		Peer:        domain.Peer{Type: domain.PeerTypeUser, ID: recipient.ID},
+		ID:          sent.SenderMessage.ID,
+		Now:         1700000312,
+	})
+	if err != nil || readDate != 1700000310 {
+		t.Fatalf("durable outbox read date after journal cleanup = %d err=%v", readDate, err)
 	}
 }
 

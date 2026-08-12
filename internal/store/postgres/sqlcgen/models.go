@@ -1578,6 +1578,7 @@ type MessageBox struct {
 	Effect               int64
 	HideEdited           bool
 	PaidMessageStars     int64
+	OutboxReadDate       int32
 }
 
 type MessageBoxMedium struct {

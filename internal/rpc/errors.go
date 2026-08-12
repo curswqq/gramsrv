@@ -287,6 +287,8 @@ func messageEditForbiddenErr() error { return tgerr.New(403, "EDIT_MESSAGES_FORB
 
 func messageNotReadYetErr() error { return tgerr.New(400, "MESSAGE_NOT_READ_YET") }
 
+func messageTooOldErr() error { return tgerr.New(400, "MESSAGE_TOO_OLD") }
+
 func scoreInvalidErr() error { return tgerr.New(400, "SCORE_INVALID") }
 
 func sessionPasswordNeededErr() error { return tgerr.New(401, "SESSION_PASSWORD_NEEDED") }
@@ -399,6 +401,7 @@ func callProtocolFlagsInvalidErr() error {
 
 func userIsBlockedErr() error         { return tgerr.New(400, "USER_IS_BLOCKED") }
 func userPrivacyRestrictedErr() error { return tgerr.New(403, "USER_PRIVACY_RESTRICTED") }
+func yourPrivacyRestrictedErr() error { return tgerr.New(403, "YOUR_PRIVACY_RESTRICTED") }
 func chatSendVoicesForbiddenErr() error {
 	return tgerr.New(403, "CHAT_SEND_VOICES_FORBIDDEN")
 }

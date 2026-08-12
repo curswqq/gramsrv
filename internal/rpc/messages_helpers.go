@@ -332,6 +332,9 @@ func (r *Router) onMessagesGetOutboxReadDate(ctx context.Context, req *tg.Messag
 	if userID == 0 || r.deps.Messages == nil {
 		return nil, messageIDInvalidErr()
 	}
+	if req == nil || req.MsgID <= 0 || req.MsgID > domain.MaxMessageBoxID {
+		return nil, messageIDInvalidErr()
+	}
 	peer, err := r.checkedDomainPeerFromInputPeer(ctx, userID, req.Peer)
 	if err != nil {
 		return nil, err
@@ -339,15 +342,77 @@ func (r *Router) onMessagesGetOutboxReadDate(ctx context.Context, req *tg.Messag
 	if peer.Type != domain.PeerTypeUser || peer.ID == 0 {
 		return nil, peerIDInvalidErr()
 	}
+	if err := r.enforceOutboxReadDatePrivacy(ctx, userID, peer.ID); err != nil {
+		return nil, err
+	}
 	date, err := r.deps.Messages.GetOutboxReadDate(ctx, userID, domain.OutboxReadDateRequest{
 		OwnerUserID: userID,
 		Peer:        peer,
 		ID:          req.MsgID,
+		Now:         int(r.clock.Now().Unix()),
 	})
 	if err != nil {
 		return nil, messageReadDateErr(err)
 	}
 	return &tg.OutboxReadDate{Date: date}, nil
+}
+
+type outboxReadDateAccountSettingsReader interface {
+	GetAccountSettings(context.Context, int64) (domain.AccountSettings, error)
+}
+
+// enforceOutboxReadDatePrivacy implements the reciprocity documented for
+// messages.getOutboxReadDate. When hide_read_marks is enabled, exact-last-seen
+// privacy also governs exact read dates. A non-Premium requester who hides the
+// same information from the peer cannot fetch it from that peer either.
+func (r *Router) enforceOutboxReadDatePrivacy(ctx context.Context, requesterUserID, peerUserID int64) error {
+	settingsReader, ok := r.deps.Account.(outboxReadDateAccountSettingsReader)
+	if !ok || settingsReader == nil {
+		// Isolated routers used by lightweight integrations may omit account
+		// settings. Production wiring always supplies the concrete account service.
+		return nil
+	}
+	loadSettings := settingsReader.GetAccountSettings
+	if _, ok := r.accountSettingsSvc(); ok {
+		loadSettings = r.cachedAccountSettings
+	}
+	peerSettings, err := loadSettings(ctx, peerUserID)
+	if err != nil {
+		return internalErr()
+	}
+	requesterSettings, err := loadSettings(ctx, requesterUserID)
+	if err != nil {
+		return internalErr()
+	}
+	if peerSettings.GlobalPrivacy.HideReadMarks {
+		if r.deps.Privacy == nil {
+			return internalErr()
+		}
+		allowed, err := r.deps.Privacy.CanSee(ctx, peerUserID, requesterUserID, domain.PrivacyKeyStatusTimestamp)
+		if err != nil {
+			return internalErr()
+		}
+		if !allowed {
+			return userPrivacyRestrictedErr()
+		}
+	}
+	if !requesterSettings.GlobalPrivacy.HideReadMarks {
+		return nil
+	}
+	if premium, ok := r.deps.Users.(UserPremiumStatusService); ok && premium.PremiumActive(ctx, requesterUserID) {
+		return nil
+	}
+	if r.deps.Privacy == nil {
+		return internalErr()
+	}
+	allowed, err := r.deps.Privacy.CanSee(ctx, requesterUserID, peerUserID, domain.PrivacyKeyStatusTimestamp)
+	if err != nil {
+		return internalErr()
+	}
+	if !allowed {
+		return yourPrivacyRestrictedErr()
+	}
+	return nil
 }
 
 func (r *Router) onMessagesGetMessageReadParticipants(ctx context.Context, req *tg.MessagesGetMessageReadParticipantsRequest) ([]tg.ReadParticipantDate, error) {
@@ -397,6 +462,8 @@ func messageReadDateErr(err error) error {
 		return messageIDInvalidErr()
 	case errors.Is(err, domain.ErrMessageNotReadYet):
 		return messageNotReadYetErr()
+	case errors.Is(err, domain.ErrMessageTooOld):
+		return messageTooOldErr()
 	default:
 		return internalErr()
 	}

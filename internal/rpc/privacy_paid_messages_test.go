@@ -134,6 +134,23 @@ func TestPrivateContactRequirementUsesNoPaidMessagesReadModel(t *testing.T) {
 	}
 }
 
+func TestUserFullAdvertisesPrivateReadDates(t *testing.T) {
+	ctx := context.Background()
+	r, account, _, _, alice, bob := newPrivateRequirementRouter(t, false)
+	if _, err := account.SetGlobalPrivacy(ctx, bob.ID, domain.GlobalPrivacy{HideReadMarks: true}); err != nil {
+		t.Fatalf("set Bob hide_read_marks: %v", err)
+	}
+	full, err := r.onUsersGetFullUser(WithUserID(ctx, alice.ID), &tg.InputUser{
+		UserID: bob.ID, AccessHash: bob.AccessHash,
+	})
+	if err != nil {
+		t.Fatalf("get Bob full user: %v", err)
+	}
+	if !full.FullUser.ReadDatesPrivate {
+		t.Fatal("userFull.read_dates_private = false, want true for hide_read_marks")
+	}
+}
+
 func TestPrivateContactRequirementPremiumGateUsesViewerFactsReadModel(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
