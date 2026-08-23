@@ -484,7 +484,14 @@ func tgMessageReplyHeader(m domain.Message) tg.MessageReplyHeaderClass {
 	if m.ReplyTo.QuoteText != "" {
 		header.SetQuote(true)
 		header.SetQuoteText(m.ReplyTo.QuoteText)
-		header.SetQuoteEntities(tgMessageEntities(m.ReplyTo.QuoteEntities))
+		// A quote over plain text has no entities. Setting the quote_entities
+		// flag with an empty vector produces a header the canonical layer-228
+		// encoder rejects ("explicit flag has nil interface field"), which fails
+		// the whole getDialogs/getHistory response and hides every chat from the
+		// affected account.
+		if len(m.ReplyTo.QuoteEntities) > 0 {
+			header.SetQuoteEntities(tgMessageEntities(m.ReplyTo.QuoteEntities))
+		}
 		header.SetQuoteOffset(m.ReplyTo.QuoteOffset)
 	}
 	return header
