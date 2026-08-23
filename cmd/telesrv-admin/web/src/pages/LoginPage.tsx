@@ -8,6 +8,7 @@ import type { AdminSession } from "../types";
 
 export function LoginPage({ onLogin }: { onLogin: (session: AdminSession) => void }) {
   const { t } = useI18n();
+  const [username, setUsername] = useState("root");
   const [secret, setSecret] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -19,8 +20,8 @@ export function LoginPage({ onLogin }: { onLogin: (session: AdminSession) => voi
     try {
       // The login answer carries the permission set and the CSRF token; api.login
       // remembers the token, the session state keeps the rights.
-      const result = await api.login(secret);
-      onLogin({ actor: result.actor, permissions: result.permissions ?? [] });
+      const result = await api.login(username.trim(), secret);
+      onLogin({ actor: result.actor, username: result.username, admin_id: result.admin_id, permissions: result.permissions ?? [] });
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -51,6 +52,15 @@ export function LoginPage({ onLogin }: { onLogin: (session: AdminSession) => voi
         </div>
         {error && <Alert>{error}</Alert>}
         <form className="form-stack" onSubmit={submit}>
+          <label>
+            <span>{t("login.username")}</span>
+            <input
+              type="text"
+              value={username}
+              autoComplete="username"
+              onChange={(event) => setUsername(event.target.value)}
+            />
+          </label>
           <label>
             <span>{t("login.secret")}</span>
             <input

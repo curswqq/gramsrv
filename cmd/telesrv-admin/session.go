@@ -98,6 +98,19 @@ func setCSRFCookie(w http.ResponseWriter, token string, ttl time.Duration) {
 	})
 }
 
+// setSessionCookie publishes the opaque session id for account-backed logins.
+// The secret material lives in admin_sessions; the browser only ever sees the id.
+func setSessionCookie(w http.ResponseWriter, value string, ttl time.Duration) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    value,
+		Path:     "/",
+		MaxAge:   int(ttl.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
 func clearSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,

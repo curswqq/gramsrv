@@ -47,32 +47,69 @@ const (
 	// curates the icon catalogue and strips granted marks.
 	permissionBotVerificationReview = "botverification.review"
 	permissionBotVerificationManage = "botverification.manage"
+	// Managing panel administrator accounts: creating accounts, disabling them,
+	// rotating somebody else's password, revoking somebody else's session.
+	permissionAdminsManage = "admins.manage"
 )
 
 type permissionsKey struct{}
+
+type authKey struct{}
+
+func authFromContext(ctx context.Context) *panelAuth {
+	if auth, ok := ctx.Value(authKey{}).(*panelAuth); ok {
+		return auth
+	}
+	return &panelAuth{}
+}
 
 // requireAuthAPI is the gate on every authenticated API route: a valid session,
 // and -- for a mutating request -- a valid CSRF token.
 func (s *server) requireAuthAPI(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(sessionCookieName)
-		if err != nil {
+		if err != nil || strings.TrimSpace(cookie.Value) == "" {
 			writeAPIError(w, http.StatusUnauthorized, "not authenticated")
 			return
 		}
-		claims, ok := verifySession(s.cfg.SessionKey, cookie.Value, time.Now())
-		if !ok {
+		auth := s.resolveSession(r, cookie.Value)
+		if auth == nil {
 			clearSessionCookie(w)
 			writeAPIError(w, http.StatusUnauthorized, "not authenticated")
 			return
 		}
-		if !checkMutationSafety(w, r, claims) {
+		if !checkMutationSafety(w, r, *auth) {
 			return
 		}
-		ctx := context.WithValue(r.Context(), actorKey{}, claims.Actor)
-		ctx = context.WithValue(ctx, permissionsKey{}, newPanelPermissions(claims.Permissions))
+		ctx := context.WithValue(r.Context(), actorKey{}, auth.username)
+		ctx = context.WithValue(ctx, authKey{}, auth)
+		ctx = context.WithValue(ctx, permissionsKey{}, auth.permissions)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// resolveSession prefers a server-side session row (account logins write an
+// opaque id). A signed legacy cookie -- the single-secret sessions issued
+// before accounts existed, or by the fallback path while no accounts are
+// seeded yet -- is still honoured, so the upgrade never logs an operator out.
+// A dotted value can only be a legacy cookie: opaque ids are plain hex.
+func (s *server) resolveSession(r *http.Request, value string) *panelAuth {
+	if s.pool != nil && !strings.Contains(value, ".") {
+		auth, err := s.lookupLiveSession(r.Context(), value)
+		if err != nil {
+			return nil
+		}
+		return auth
+	}
+	claims, ok := verifySession(s.cfg.SessionKey, value, time.Now())
+	if !ok {
+		return nil
+	}
+	return &panelAuth{
+		username:    claims.Actor,
+		permissions: newPanelPermissions(claims.Permissions),
+		csrf:        claims.CSRF,
+	}
 }
 
 // requirePermission refuses a session that was not granted the right, before the
@@ -93,8 +130,10 @@ func (s *server) requirePermission(permission string, next http.Handler) http.Ha
 	})
 }
 
-// checkMutationSafety enforces the CSRF contract on a mutating request.
-func checkMutationSafety(w http.ResponseWriter, r *http.Request, claims sessionClaims) bool {
+// checkMutationSafety enforces the CSRF contract on a mutating request. The
+// token is bound to the session -- inside the signed claims for a legacy
+// cookie, in the admin_sessions row for an account login.
+func checkMutationSafety(w http.ResponseWriter, r *http.Request, auth panelAuth) bool {
 	if !mutatingMethod(r.Method) {
 		return true
 	}
@@ -116,11 +155,11 @@ func checkMutationSafety(w http.ResponseWriter, r *http.Request, claims sessionC
 		writeAPIError(w, http.StatusForbidden, csrfHeaderName+" does not match the "+csrfCookieName+" cookie")
 		return false
 	}
-	// The signed session is the third leg: it pins the pair to the session this
-	// server issued. A session minted before the token existed carries no CSRF
-	// claim and is refused, which forces one re-login rather than leaving a
-	// half-protected session running.
-	if claims.CSRF == "" || subtle.ConstantTimeCompare([]byte(header), []byte(claims.CSRF)) != 1 {
+	// The session is the third leg: it pins the pair to the session this server
+	// issued. A session minted before the token existed carries no CSRF claim and
+	// is refused, which forces one re-login rather than leaving a half-protected
+	// session running.
+	if auth.csrf == "" || subtle.ConstantTimeCompare([]byte(header), []byte(auth.csrf)) != 1 {
 		writeAPIError(w, http.StatusForbidden, "csrf token is not bound to this session; sign in again")
 		return false
 	}

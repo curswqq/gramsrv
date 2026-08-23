@@ -202,6 +202,14 @@ export function AccountDetailPage({ id, navigate }: { id: number; navigate: Navi
                 onDone={load}
               />
               <ActionButton
+                label={t("account.debitStars")}
+                icon={<Star size={15} />}
+                tone="warn"
+                path="/api/actions/debit-stars"
+                payload={() => ({ user_id: account.ID, amount: toInt(starsAmount) })}
+                onDone={load}
+              />
+              <ActionButton
                 label={detail.Verified ? t("account.clearVerified") : t("account.setVerified")}
                 icon={<BadgeCheck size={15} />}
                 tone="warn"
