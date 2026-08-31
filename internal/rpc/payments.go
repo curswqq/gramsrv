@@ -305,7 +305,7 @@ func (r *Router) onPaymentsGetStarsStatus(ctx context.Context, req *tg.PaymentsG
 	// continue with getStarsTransactions. Returning only the balance leaves the
 	// iOS history section empty even though the ledger itself is populated.
 	page, err := r.deps.Stars.ListTransactions(ctx, userID, domain.StarsTransactionQuery{
-		Limit:     5,
+		Limit:     20,
 		Direction: domain.StarsTransactionDirectionAll,
 	})
 	if err != nil {
@@ -318,9 +318,7 @@ func (r *Router) onPaymentsGetStarsStatus(ctx context.Context, req *tg.PaymentsG
 	if page.NextOffset != "" {
 		out.SetNextOffset(page.NextOffset)
 	}
-	if ids := starsTransactionUserIDs(page.Transactions); len(ids) > 0 {
-		out.Users = tgUsersForViewer(userID, r.domainUsersForIDs(ctx, userID, ids))
-	}
+	r.enrichStarsLedgerStatus(ctx, userID, page.Transactions, out)
 	return out, nil
 }
 
@@ -436,10 +434,7 @@ func (r *Router) onPaymentsGetStarsTransactions(ctx context.Context, req *tg.Pay
 	if page.NextOffset != "" {
 		out.SetNextOffset(page.NextOffset)
 	}
-	// 富化流水中提到的用户对手方（频道对手方进 Chats 留待 paid reaction 阶段）。
-	if ids := starsTransactionUserIDs(page.Transactions); len(ids) > 0 {
-		out.Users = tgUsersForViewer(userID, r.domainUsersForIDs(ctx, userID, ids))
-	}
+	r.enrichStarsLedgerStatus(ctx, userID, page.Transactions, out)
 	return out, nil
 }
 
@@ -451,7 +446,7 @@ func starsTransactionQuery(req *tg.PaymentsGetStarsTransactionsRequest) (domain.
 	if inbound && outbound {
 		return domain.StarsTransactionQuery{}, inputRequestInvalidErr()
 	}
-	if _, ok := req.GetSubscriptionID(); ok {
+	if subID, ok := req.GetSubscriptionID(); ok && subID != "" {
 		// Stars subscriptions are not part of the current business model. Do not
 		// silently return the unfiltered ledger for a requested subscription.
 		return domain.StarsTransactionQuery{}, subscriptionIDInvalidErr()
@@ -509,6 +504,28 @@ func (r *Router) starGiftLedgerOwnerForPeer(ctx context.Context, input tg.InputP
 	return userID, owner, nil
 }
 
+func (r *Router) enrichStarsLedgerStatus(ctx context.Context, viewerID int64, txns []domain.StarsTransaction, out *tg.PaymentsStarsStatus) {
+	userIDs := make([]int64, 0, len(txns))
+	channelIDs := make([]int64, 0, len(txns))
+	for _, txn := range txns {
+		switch txn.Peer.Type {
+		case domain.PeerTypeUser:
+			if txn.Peer.ID != 0 {
+				userIDs = append(userIDs, txn.Peer.ID)
+			}
+		case domain.PeerTypeChannel:
+			if txn.Peer.ID != 0 {
+				channelIDs = append(channelIDs, txn.Peer.ID)
+			}
+		}
+		if txn.RecipientUserID != 0 {
+			userIDs = append(userIDs, txn.RecipientUserID)
+		}
+	}
+	out.Users = tgUsersForViewer(viewerID, r.domainUsersForIDs(ctx, viewerID, uniqueInt64(userIDs)))
+	out.Chats = r.tgChatsForChannelIDs(ctx, viewerID, uniqueInt64(channelIDs))
+}
+
 func (r *Router) enrichChannelStarsLedgerStatus(ctx context.Context, viewerID, ownerChannelID int64, txns []domain.StarsTransaction, out *tg.PaymentsStarsStatus) {
 	userIDs := make([]int64, 0, len(txns))
 	channelIDs := []int64{ownerChannelID}
@@ -548,6 +565,43 @@ func emptyStarsStatus(balance tg.StarsAmountClass) *tg.PaymentsStarsStatus {
 	}
 }
 
+func defaultStarsTransactionTitle(reason domain.StarsTransactionReason, amount int64) string {
+	switch reason {
+	case domain.StarsReasonTopup:
+		return "Telegram Stars"
+	case domain.StarsReasonGrant:
+		return "Stars Grant"
+	case domain.StarsReasonReaction:
+		return "Channel Reaction"
+	case domain.StarsReasonPaidMessage:
+		return "Paid Message"
+	case domain.StarsReasonPremium:
+		return "Telegram Premium"
+	case domain.StarsReasonGift:
+		if amount > 0 {
+			return "Gift Received"
+		}
+		return "Gift Sent"
+	case domain.StarsReasonGiftResale:
+		return "Gift Resale"
+	case domain.StarsReasonGiftUpgrade:
+		return "Gift Upgrade"
+	case domain.StarsReasonGiftPrepaid:
+		return "Gift Prepaid Upgrade"
+	case domain.StarsReasonGiftDrop:
+		return "Gift Details"
+	case domain.StarsReasonGiftAuction:
+		return "Gift Auction"
+	case domain.StarsReasonGiftOffer:
+		return "Gift Offer"
+	default:
+		if amount > 0 {
+			return "Stars Inbound"
+		}
+		return "Stars Outbound"
+	}
+}
+
 // tgStarsTransactions 把账本流水投影为 tg.StarsTransaction（amount 带符号：借记为负）。
 func tgStarsTransactions(in []domain.StarsTransaction) []tg.StarsTransaction {
 	out := make([]tg.StarsTransaction, 0, len(in))
@@ -558,8 +612,12 @@ func tgStarsTransactions(in []domain.StarsTransaction) []tg.StarsTransaction {
 			Date:   t.Date,
 			Peer:   tgStarsTransactionPeer(t),
 		}
-		if t.Title != "" {
-			item.SetTitle(t.Title)
+		title := t.Title
+		if title == "" {
+			title = defaultStarsTransactionTitle(t.Reason, t.Amount)
+		}
+		if title != "" {
+			item.SetTitle(title)
 		}
 		if t.Description != "" {
 			item.SetDescription(t.Description)
