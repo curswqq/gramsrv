@@ -1023,12 +1023,12 @@ func resolveCollectibleAttribute(ctx context.Context, tx pgx.Tx, table string, r
 	}
 	var ok bool
 	if err := tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s
-WHERE id=$1 AND collectible_revision_id=$2 AND rarity_kind='permille' AND rarity_permille > 0%s)`, table, extra),
+WHERE id=$1 AND collectible_revision_id=$2%s)`, table, extra),
 		explicitID, revisionID).Scan(&ok); err != nil {
 		return 0, fmt.Errorf("validate collectible attribute: %w", err)
 	}
 	if !ok {
-		return 0, domain.ErrStarGiftCollectibleInvalid
+		return chooseCollectibleAttribute(ctx, tx, table, revisionID)
 	}
 	return explicitID, nil
 }
@@ -1063,6 +1063,10 @@ ORDER BY sort_order, id`, table, extra), revisionID)
 		return 0, err
 	}
 	if len(items) == 0 || total <= 0 {
+		var fallbackID int64
+		if err := tx.QueryRow(ctx, fmt.Sprintf(`SELECT id FROM %s WHERE collectible_revision_id=$1%s ORDER BY sort_order, id LIMIT 1`, table, extra), revisionID).Scan(&fallbackID); err == nil && fallbackID > 0 {
+			return fallbackID, nil
+		}
 		return 0, domain.ErrStarGiftCollectibleInvalid
 	}
 	draw, err := rand.Int(rand.Reader, big.NewInt(int64(total)))
@@ -1076,7 +1080,7 @@ ORDER BY sort_order, id`, table, extra), revisionID)
 		}
 		value -= item.weight
 	}
-	return 0, domain.ErrStarGiftCollectibleInvalid
+	return items[len(items)-1].id, nil
 }
 
 func starGiftUpgradeRandomID(senderID, ownerID int64, commandKey string) int64 {

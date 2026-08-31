@@ -105,6 +105,10 @@ func (s *StarGiftLifecycleStore) PrepayStarGiftUpgrade(ctx context.Context, req 
 		if _, err := tx.Exec(ctx, `UPDATE peer_star_gifts SET prepaid_upgrade_stars=$2,prepaid_upgrade_hash='' WHERE id=$1`, locked.ID, req.ChargeStars); err != nil {
 			return err
 		}
+		if _, err := tx.Exec(ctx, `INSERT INTO star_gift_collectible_reservations(saved_gift_id, collectible_revision_id)
+VALUES($1,$2) ON CONFLICT (saved_gift_id) DO NOTHING`, locked.ID, revision.ID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO star_gift_prepaid_upgrade_commands(payer_user_id,command_key,saved_gift_id,form_id,charge_stars,balance_after,created_at)
 VALUES($1,$2,$3,$4,$5,$6,$7)`, req.PayerUserID, req.CommandKey, locked.ID, req.FormID, req.ChargeStars, balance.Balance, req.Date); err != nil {
 			return err
