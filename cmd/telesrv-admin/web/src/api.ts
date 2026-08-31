@@ -5,6 +5,9 @@ import type {
   AccountRatingListResponse,
   AdminLoginResult,
   AdminSession,
+  AdminSessionsResponse,
+  AdminUserRow,
+  AdminUsersResponse,
   BotDetail,
   BotListResponse,
   BroadcastListResponse,
@@ -145,16 +148,26 @@ export function errorMessage(error: unknown): string {
 
 export const api = {
   session: () => request<AdminSession>("/api/session"),
-  login: async (secret: string) => {
+  login: async (username: string, secret: string) => {
     const result = await request<AdminLoginResult>("/api/login", {
       method: "POST",
-      body: JSON.stringify({ secret })
+      body: JSON.stringify({ username, secret })
     });
     // Stashed here rather than in the caller so no login path can forget it.
     rememberCSRFToken(result.csrf_token);
     return result;
   },
   logout: () => request<{ ok: boolean }>("/api/logout", { method: "POST", body: "{}" }),
+  admins: () => request<AdminUsersResponse>("/api/admins"),
+  createAdmin: (payload: { username: string; password: string; permissions: string[] }) =>
+    request<{ admin: AdminUserRow }>("/api/admins", { method: "POST", body: JSON.stringify(payload) }),
+  setAdminPassword: (id: number, password: string) =>
+    request<{ ok: boolean }>(`/api/admins/${id}/password`, { method: "POST", body: JSON.stringify({ password }) }),
+  setAdminActive: (id: number, active: boolean) =>
+    request<{ ok: boolean; active: boolean }>(`/api/admins/${id}/active`, { method: "POST", body: JSON.stringify({ active }) }),
+  adminSessions: () => request<AdminSessionsResponse>("/api/admins/sessions"),
+  revokeAdminSession: (id: string) =>
+    request<{ ok: boolean }>(`/api/admins/sessions/${encodeURIComponent(id)}/revoke`, { method: "POST", body: "{}" }),
   accounts: (params: URLSearchParams) => request<AccountListResponse>(`/api/accounts?${params.toString()}`),
   account: (id: number) => request<AccountDetail>(`/api/accounts/${id}`),
   channels: (params: URLSearchParams) => request<ChannelListResponse>(`/api/channels?${params.toString()}`),

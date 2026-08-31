@@ -48,10 +48,14 @@ func run() error {
 	hs := hoststats.NewPoller(cfg.DiskStatsPath)
 	go hs.Run(ctx, hostStatsPollInterval)
 
-	srv, err := newServer(cfg, newReadStore(pool), hs)
+	srv, err := newServer(cfg, newReadStore(pool), hs, pool)
 	if err != nil {
 		return err
 	}
+	// Seed the first administrator from the environment secret (and make sure
+	// the tables exist) before the listener opens, so an upgraded deployment
+	// keeps working without a manual migration step.
+	srv.EnsureBootstrapAdmin(ctx)
 	httpServer := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           srv.routes(),

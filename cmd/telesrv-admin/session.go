@@ -86,7 +86,11 @@ func newCSRFToken() (string, error) {
 }
 
 // setCSRFCookie publishes the token to the browser.
-func setCSRFCookie(w http.ResponseWriter, token string, ttl time.Duration, secure bool) {
+func setCSRFCookie(w http.ResponseWriter, token string, ttl time.Duration, secure ...bool) {
+	sec := false
+	if len(secure) > 0 {
+		sec = secure[0]
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:   csrfCookieName,
 		Value:  token,
@@ -94,7 +98,25 @@ func setCSRFCookie(w http.ResponseWriter, token string, ttl time.Duration, secur
 		MaxAge: int(ttl.Seconds()),
 		// Readable by the panel's script on purpose; see csrfCookieName.
 		HttpOnly: false,
-		Secure:   secure,
+		Secure:   sec,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// setSessionCookie publishes the opaque session id for account-backed logins.
+// The secret material lives in admin_sessions; the browser only ever sees the id.
+func setSessionCookie(w http.ResponseWriter, value string, ttl time.Duration, secure ...bool) {
+	sec := false
+	if len(secure) > 0 {
+		sec = secure[0]
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    value,
+		Path:     "/",
+		MaxAge:   int(ttl.Seconds()),
+		HttpOnly: true,
+		Secure:   sec,
 		SameSite: http.SameSiteLaxMode,
 	})
 }

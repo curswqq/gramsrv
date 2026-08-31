@@ -11,6 +11,10 @@ export const permissionPremiumManage = "premium.manage";
 export const permissionBotTokenRead = "bots.token.read";
 export const permissionVerificationReview = "verification.review";
 export const permissionVerificationRevoke = "verification.revoke";
+// Managing panel administrator accounts (create, disable, rotate other
+// passwords, revoke other sessions). Password self-service needs no right:
+// every signed-in administrator can change their own password.
+export const permissionAdminsManage = "admins.manage";
 // Third-party verification is a separate mechanism and therefore a separate pair of
 // rights: review reads the section and decides applications, manage owns the
 // verifier roster, the icon catalogue and taking a granted mark away.

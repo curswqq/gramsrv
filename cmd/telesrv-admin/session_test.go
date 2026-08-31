@@ -32,7 +32,7 @@ func TestSignedSessionRoundTripAndTamper(t *testing.T) {
 }
 
 func TestSPAFallbackSmoke(t *testing.T) {
-	srv, err := newServer(uiConfig{SessionKey: []byte("01234567890123456789012345678901")}, nil, nil)
+	srv, err := newServer(uiConfig{SessionKey: []byte("01234567890123456789012345678901")}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
@@ -389,7 +389,7 @@ func TestFlexScalarsAcceptNumbersStringsAndBlanks(t *testing.T) {
 }
 
 func TestNewCollectibleAndRatingRoutesRequireSession(t *testing.T) {
-	srv, err := newServer(uiConfig{SessionKey: []byte("01234567890123456789012345678901")}, nil, nil)
+	srv, err := newServer(uiConfig{SessionKey: []byte("01234567890123456789012345678901")}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
@@ -428,3 +428,61 @@ func TestEscapeLikePatternKeepsUsernameSearchLiteral(t *testing.T) {
 		t.Fatalf("escapeLikePattern empty = %q", got)
 	}
 }
+
+func TestSecurityHeadersMiddleware(t *testing.T) {
+	srv, err := newServer(uiConfig{SessionKey: []byte("01234567890123456789012345678901")}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Errorf("X-Frame-Options = %q, want DENY", got)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := rec.Header().Get("Referrer-Policy"); got != "strict-origin-when-cross-origin" {
+		t.Errorf("Referrer-Policy = %q, want strict-origin-when-cross-origin", got)
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'self'") {
+		t.Errorf("Content-Security-Policy = %q, want default-src 'self'", got)
+	}
+}
+
+func TestLoginRateLimiting(t *testing.T) {
+	srv, err := newServer(uiConfig{
+		SessionKey: []byte("01234567890123456789012345678901"),
+		Password:   "correct-password",
+	}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+
+	// 5 failed attempts
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"secret":"wrong"}`))
+		req.Header.Set("Origin", "http://example.com")
+		req.Host = "example.com"
+		req.RemoteAddr = "198.51.100.25:12345"
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d status=%d, want 401", i, rec.Code)
+		}
+	}
+
+	// 6th attempt should be rate limited (429 Too Many Requests)
+	req := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"secret":"wrong"}`))
+	req.Header.Set("Origin", "http://example.com")
+	req.Host = "example.com"
+	req.RemoteAddr = "198.51.100.25:12345"
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("attempt 6 status=%d, want 429", rec.Code)
+	}
+}
+

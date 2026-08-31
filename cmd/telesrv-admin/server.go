@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"path"
@@ -20,6 +21,8 @@ import (
 	"telesrv/internal/admin"
 	"telesrv/internal/domain"
 	"telesrv/internal/hoststats"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 //go:embed web/dist
@@ -29,12 +32,13 @@ type server struct {
 	cfg          uiConfig
 	read         *readStore
 	hostStats    *hoststats.Poller
+	pool         *pgxpool.Pool
 	loginLimiter *loginRateLimiter
 	web          fs.FS
 	webServer    http.Handler
 }
 
-func newServer(cfg uiConfig, read *readStore, hostStats *hoststats.Poller) (*server, error) {
+func newServer(cfg uiConfig, read *readStore, hostStats *hoststats.Poller, pool *pgxpool.Pool) (*server, error) {
 	web, err := fs.Sub(webDist, "web/dist")
 	if err != nil {
 		return nil, err
@@ -43,6 +47,7 @@ func newServer(cfg uiConfig, read *readStore, hostStats *hoststats.Poller) (*ser
 		cfg:          cfg,
 		read:         read,
 		hostStats:    hostStats,
+		pool:         pool,
 		loginLimiter: newLoginRateLimiter(),
 		web:          web,
 		webServer:    http.FileServer(http.FS(web)),
@@ -102,6 +107,16 @@ func (s *server) routes() http.Handler {
 	mux.Handle("POST /api/actions/grant-premium", s.premiumManage(s.handleGrantPremiumAPI))
 	mux.Handle("POST /api/actions/upsert-premium-plan", s.premiumManage(s.handleUpsertPremiumPlanAPI))
 	mux.Handle("POST /api/actions/grant-stars", s.requireAuthAPI(http.HandlerFunc(s.handleGrantStarsAPI)))
+	mux.Handle("POST /api/actions/debit-stars", s.requireAuthAPI(http.HandlerFunc(s.handleDebitStarsAPI)))
+	// Panel administrator accounts. Management of other accounts is gated by
+	// admins.manage; password self-service and the session list are available to
+	// every signed-in administrator (handlers narrow the scope themselves).
+	mux.Handle("GET /api/admins", s.adminsManage(s.handleAdminsAPI))
+	mux.Handle("POST /api/admins", s.adminsManage(s.handleAdminsAPI))
+	mux.Handle("POST /api/admins/{id}/password", s.requireAuthAPI(http.HandlerFunc(s.handleAdminPasswordAPI)))
+	mux.Handle("POST /api/admins/{id}/active", s.adminsManage(http.HandlerFunc(s.handleAdminActiveAPI)))
+	mux.Handle("GET /api/admins/sessions", s.requireAuthAPI(http.HandlerFunc(s.handleAdminSessionsAPI)))
+	mux.Handle("POST /api/admins/sessions/{id}/revoke", s.requireAuthAPI(http.HandlerFunc(s.handleAdminSessionRevokeAPI)))
 	mux.Handle("POST /api/actions/set-verified", s.requireAuthAPI(http.HandlerFunc(s.handleSetVerifiedAPI)))
 	mux.Handle("POST /api/actions/set-account-flags", s.requireAuthAPI(http.HandlerFunc(s.handleSetUserFlagsAPI)))
 	mux.Handle("POST /api/actions/set-channel-flags", s.requireAuthAPI(http.HandlerFunc(s.handleSetChannelFlagsAPI)))
@@ -254,7 +269,8 @@ func (s *server) handleApp(w http.ResponseWriter, r *http.Request) {
 }
 
 type loginRequest struct {
-	Secret string `json:"secret"`
+	Username string `json:"username"`
+	Secret   string `json:"secret"`
 }
 
 // sessionTTL bounds a signed panel session and the CSRF cookie that goes with it,
@@ -279,6 +295,19 @@ func (s *server) handleAPILogin(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(r, &req); err != nil {
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	// Account-backed logins take over once at least one administrator exists;
+	// until then (fresh install, token-only deployment) the single shared
+	// secret from the environment still works exactly as before.
+	username := strings.TrimSpace(req.Username)
+	if username == "" {
+		username = bootstrapAdminUsername
+	}
+	if s.pool != nil {
+		if count, countErr := s.adminCount(r.Context()); countErr == nil && count > 0 {
+			s.handleAccountLogin(w, r, username, req.Secret)
+			return
+		}
 	}
 	if !s.validSecret(req.Secret) {
 		s.loginLimiter.recordFailure(ip, now)
@@ -331,7 +360,14 @@ func (s *server) validSecret(secret string) bool {
 	return false
 }
 
-func (s *server) handleAPILogout(w http.ResponseWriter, _ *http.Request) {
+func (s *server) handleAPILogout(w http.ResponseWriter, r *http.Request) {
+	// Account-backed sessions are revoked server-side; legacy signed cookies
+	// carry no id and simply expire with the cookie below.
+	if cookie, err := r.Cookie(sessionCookieName); err == nil && s.pool != nil && !strings.Contains(cookie.Value, ".") {
+		if err := s.revokeAdminSession(r.Context(), cookie.Value); err != nil && !errors.Is(err, errAdminNotFound) {
+			log.Printf("revoke admin session on logout failed: %v", err)
+		}
+	}
 	clearSessionCookie(w)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -340,10 +376,16 @@ func (s *server) handleAPILogout(w http.ResponseWriter, _ *http.Request) {
 // session carries, so the UI can hide a section the operator may not use rather
 // than letting them walk into a 403.
 func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
+	auth := authFromContext(r.Context())
+	payload := map[string]any{
 		"actor":       actorFromContext(r.Context()),
+		"username":    auth.username,
 		"permissions": permissionsFromContext(r.Context()).List(),
-	})
+	}
+	if auth.adminID > 0 {
+		payload["admin_id"] = auth.adminID
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (s *server) handleStarGiftsAPI(w http.ResponseWriter, r *http.Request) {
@@ -1528,6 +1570,24 @@ func (s *server) handleGrantStarsAPI(w http.ResponseWriter, r *http.Request) {
 		Amount:      body.Amount,
 	}
 	result, err := s.callAdminAPI(r.Context(), "/v1/accounts/grant-stars", req)
+	writeCommandResultAPI(w, result, err)
+}
+
+// handleDebitStarsAPI is the panel twin of the grant action: the same command
+// journal, the same dry-run/confirm contract, in the opposite direction. The
+// admin API rejects an overdraft, so a debit larger than the balance fails
+// without touching the ledger.
+func (s *server) handleDebitStarsAPI(w http.ResponseWriter, r *http.Request) {
+	var body grantStarsAPIRequest
+	if !decodeAction(w, r, &body) {
+		return
+	}
+	req := admin.DebitStarsRequest{
+		CommandMeta: s.commandMetaFromAPI(r, body.CommandID, body.Reason, body.Confirm, "debit-stars"),
+		UserID:      body.UserID,
+		Amount:      body.Amount,
+	}
+	result, err := s.callAdminAPI(r.Context(), "/v1/accounts/debit-stars", req)
 	writeCommandResultAPI(w, result, err)
 }
 

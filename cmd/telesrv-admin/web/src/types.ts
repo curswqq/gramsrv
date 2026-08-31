@@ -746,6 +746,8 @@ export type BotVerificationCountsResponse = {
 
 export type AdminSession = {
   actor: string;
+  username?: string | null;
+  admin_id?: number | null;
   // The right set the signed session was issued with; ["*"] means everything.
   permissions?: string[] | null;
 };
@@ -753,6 +755,33 @@ export type AdminSession = {
 export type AdminLoginResult = AdminSession & {
   csrf_token: string;
 };
+
+export type AdminUserRow = {
+  id: number;
+  username: string;
+  permissions: string[];
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+  active_sessions: number;
+};
+
+export type AdminUsersResponse = { admins: AdminUserRow[] };
+
+// A server-side panel session (admin_sessions). The id doubles as the revoke
+// target; it never reaches a browser other than its owner's own cookie.
+export type AdminAccountSession = {
+  id: string;
+  admin_id: number;
+  username: string;
+  ip_addr: string;
+  user_agent: string;
+  created_at: string;
+  last_seen_at: string;
+  expires_at: string;
+};
+
+export type AdminSessionsResponse = { sessions: AdminAccountSession[] };
 
 export type MessageDetail = {
   Message: MessageRow;

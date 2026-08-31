@@ -3,6 +3,7 @@ import { AccountDetailPage } from "./AccountDetailPage";
 import { AccountRatingDetailPage } from "./AccountRatingDetailPage";
 import { AccountRatingsPage } from "./AccountRatingsPage";
 import { AccountsPage } from "./AccountsPage";
+import { AdminsPage } from "./AdminsPage";
 import { CollectibleUsernameDetailPage } from "./CollectibleUsernameDetailPage";
 import { CollectibleUsernamesPage } from "./CollectibleUsernamesPage";
 import { CollectiblePhonesPage } from "./CollectiblePhonesPage";
@@ -31,6 +32,7 @@ import { StoragePage } from "./StoragePage";
 import { StickerSetsPage } from "./StickerSetsPage";
 import {
   PermissionGate,
+  permissionAdminsManage,
   permissionBotVerificationReview,
   permissionPremiumManage,
   permissionVerificationReview
@@ -96,6 +98,13 @@ export function Routes({ route, navigate }: { route: RouteState; navigate: Navig
   }
   if (route.path === "/storage") {
     return <StoragePage />;
+  }
+  if (route.path === "/admins") {
+    return (
+      <PermissionGate permission={permissionAdminsManage}>
+        <AdminsPage />
+      </PermissionGate>
+    );
   }
   if (route.path === "/monetization" || route.path === "/premium") {
     return (

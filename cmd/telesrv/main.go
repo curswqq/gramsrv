@@ -135,9 +135,6 @@ func newBusinessAutomationOptions(cfg config.Config, online messageapp.BusinessA
 	provider := strings.ToLower(strings.TrimSpace(cfg.BusinessAIProvider))
 	switch provider {
 	case "", "template", "quick_reply", "quick-reply":
-		logger.Info("Business automation reply provider", zap.String("provider", "template"))
-	case "echo":
-		opts = append(opts, messageapp.WithBusinessAutomationReplyProvider(messageapp.NewEchoBusinessAutomationProvider()))
 		logger.Info("Business automation reply provider", zap.String("provider", "echo"))
 	case "ai", "compose_ai", "ai_compose", "aicompose", "kimi":
 		if generator == nil {
