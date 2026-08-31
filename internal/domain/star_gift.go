@@ -756,9 +756,11 @@ type StarGiftAuction struct {
 	BidLevels     []StarGiftAuctionBidLevel
 	TopBidders    []int64
 	UserState     StarGiftAuctionUserState
-	Finished      bool
-	AveragePrice  int64
-	ListedCount   int
+	Finished            bool
+	AveragePrice        int64
+	ListedCount         int
+	FragmentListedCount int
+	FragmentListedURL   string
 }
 
 type StarGiftAuctionBidLevel struct {

@@ -789,7 +789,7 @@ func (r *Router) onPaymentsGetStarGiftAuctionState(ctx context.Context, req *tg.
 		stateClass = &tg.StarGiftAuctionStateNotModified{}
 	}
 	return &tg.PaymentsStarGiftAuctionState{Gift: tgStarGift(state.Gift), State: stateClass,
-		UserState: tgStarGiftAuctionUserState(state.UserState), Timeout: 30, Users: r.auctionUsers(ctx, userID, state), Chats: []tg.ChatClass{}}, nil
+		UserState: tgStarGiftAuctionUserState(state.UserState), Timeout: 30, Users: r.auctionUsers(ctx, userID, state), Chats: r.auctionChats(ctx, userID, state)}, nil
 }
 
 func (r *Router) onPaymentsGetStarGiftActiveAuctions(ctx context.Context, req *tg.PaymentsGetStarGiftActiveAuctionsRequest) (tg.PaymentsStarGiftActiveAuctionsClass, error) {
@@ -807,15 +807,36 @@ func (r *Router) onPaymentsGetStarGiftActiveAuctions(ctx context.Context, req *t
 	if err != nil {
 		return nil, starGiftLifecycleErr(err)
 	}
+	if req.Hash != 0 && req.Hash == evalStarGiftActiveAuctionsHash(states) {
+		return &tg.PaymentsStarGiftActiveAuctionsNotModified{}, nil
+	}
 	out := &tg.PaymentsStarGiftActiveAuctions{Auctions: make([]tg.StarGiftActiveAuctionState, 0, len(states)), Users: []tg.UserClass{}, Chats: []tg.ChatClass{}}
-	userIDs := make([]int64, 0)
+	userIDs, channelIDs := make([]int64, 0), make([]int64, 0)
 	for _, state := range states {
 		out.Auctions = append(out.Auctions, tg.StarGiftActiveAuctionState{Gift: tgStarGift(state.Gift),
 			State: tgStarGiftAuctionState(state), UserState: tgStarGiftAuctionUserState(state.UserState)})
 		userIDs = append(userIDs, state.TopBidders...)
+		if state.UserState.BidPeer.Type == domain.PeerTypeUser && state.UserState.BidPeer.ID > 0 {
+			userIDs = append(userIDs, state.UserState.BidPeer.ID)
+		} else if state.UserState.BidPeer.Type == domain.PeerTypeChannel && state.UserState.BidPeer.ID > 0 {
+			channelIDs = append(channelIDs, state.UserState.BidPeer.ID)
+		}
 	}
 	out.Users = r.tgUsersForViewer(userID, r.domainUsersForIDs(ctx, userID, uniqueInt64(userIDs)))
+	out.Chats = r.tgChatsForChannelIDs(ctx, userID, uniqueInt64(channelIDs))
 	return out, nil
+}
+
+func evalStarGiftActiveAuctionsHash(states []domain.StarGiftAuction) int64 {
+	var acc int64
+	for _, state := range states {
+		if state.Finished || state.UserState.BidDate <= 0 {
+			continue
+		}
+		acc = (acc * 20261) + int64(uint32(state.Version))
+		acc = (acc * 20261) + int64(uint32(state.UserState.BidDate))
+	}
+	return acc
 }
 
 func (r *Router) onPaymentsGetStarGiftAuctionAcquiredGifts(ctx context.Context, req *tg.PaymentsGetStarGiftAuctionAcquiredGiftsRequest) (*tg.PaymentsStarGiftAuctionAcquiredGifts, error) {
@@ -881,6 +902,10 @@ func tgStarGiftAuctionState(state domain.StarGiftAuction) tg.StarGiftAuctionStat
 		if state.ListedCount > 0 {
 			out.SetListedCount(state.ListedCount)
 		}
+		if state.FragmentListedCount > 0 && state.FragmentListedURL != "" {
+			out.SetFragmentListedCount(state.FragmentListedCount)
+			out.SetFragmentListedURL(state.FragmentListedURL)
+		}
 		return out
 	}
 	levels := make([]tg.AuctionBidLevel, 0, len(state.BidLevels))
@@ -910,10 +935,17 @@ func tgStarGiftAuctionUserState(state domain.StarGiftAuctionUserState) tg.StarGi
 
 func (r *Router) auctionUsers(ctx context.Context, viewerID int64, state domain.StarGiftAuction) []tg.UserClass {
 	ids := append([]int64(nil), state.TopBidders...)
-	if state.UserState.BidPeer.Type == domain.PeerTypeUser {
+	if state.UserState.BidPeer.Type == domain.PeerTypeUser && state.UserState.BidPeer.ID > 0 {
 		ids = append(ids, state.UserState.BidPeer.ID)
 	}
 	return r.tgUsersForViewer(viewerID, r.domainUsersForIDs(ctx, viewerID, uniqueInt64(ids)))
+}
+
+func (r *Router) auctionChats(ctx context.Context, viewerID int64, state domain.StarGiftAuction) []tg.ChatClass {
+	if state.UserState.BidPeer.Type == domain.PeerTypeChannel && state.UserState.BidPeer.ID > 0 {
+		return r.tgChatsForChannelIDs(ctx, viewerID, []int64{state.UserState.BidPeer.ID})
+	}
+	return []tg.ChatClass{}
 }
 
 func (r *Router) starGiftSendUpdates(ctx context.Context, viewerID int64, send domain.SendPrivateTextResult) *tg.Updates {

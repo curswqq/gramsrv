@@ -542,6 +542,8 @@ type MessageWebPage struct {
 	// ComposeToneEmojiID 映射 webPageAttributeAiComposeTone，用于 TDesktop 渲染
 	// addstyle tone 分享卡片；0 表示普通网页。
 	ComposeToneEmojiID int64 `json:"compose_tone_emoji_id,omitempty"`
+	// StarGiftAuction 映射 webPageAttributeStarGiftAuction，用于渲染拍卖 deep link 预览卡片。
+	StarGiftAuction *StarGiftAuction `json:"star_gift_auction,omitempty"`
 
 	ForceLargeMedia bool `json:"force_large_media,omitempty"`
 	ForceSmallMedia bool `json:"force_small_media,omitempty"`

@@ -217,10 +217,19 @@ func tgWebPage(w domain.MessageWebPage) tg.WebPageClass {
 				}
 			}
 		}
+		var attrs []tg.WebPageAttributeClass
 		if w.ComposeToneEmojiID != 0 {
-			page.SetAttributes([]tg.WebPageAttributeClass{
-				&tg.WebPageAttributeAiComposeTone{EmojiID: w.ComposeToneEmojiID},
+			attrs = append(attrs, &tg.WebPageAttributeAiComposeTone{EmojiID: w.ComposeToneEmojiID})
+		}
+		if w.StarGiftAuction != nil {
+			page.SetType("telegram_auction")
+			attrs = append(attrs, &tg.WebPageAttributeStarGiftAuction{
+				Gift:    tgStarGift(w.StarGiftAuction.Gift),
+				EndDate: w.StarGiftAuction.EndDate,
 			})
+		}
+		if len(attrs) > 0 {
+			page.SetAttributes(attrs)
 		}
 		return page
 	case domain.MessageWebPageStateEmpty:

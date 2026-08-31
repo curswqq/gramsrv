@@ -1122,7 +1122,7 @@ current_round,total_rounds,round_duration,status FROM star_gift_auctions WHERE g
 		}
 	}
 	rows, err := s.db.Query(ctx, `SELECT amount,bid_date FROM star_gift_auction_bids WHERE gift_id=$1 AND active
-ORDER BY amount DESC,bid_date,bidder_user_id LIMIT 20`, giftID)
+ORDER BY amount DESC,bid_date,bidder_user_id LIMIT 100`, giftID)
 	if err != nil {
 		return domain.StarGiftAuction{}, err
 	}
