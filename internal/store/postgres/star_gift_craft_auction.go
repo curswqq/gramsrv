@@ -1222,14 +1222,14 @@ func (s *StarGiftLifecycleStore) CreateStarGiftAuction(ctx context.Context, req 
 		_ = gift
 		if _, err := tx.Exec(ctx, `
 UPDATE star_gift_catalog
-SET auction=true, auction_slug=$2, auction_start_date=$3, gifts_per_round=$4, availability_remains=$5, availability_total=$5, updated_at=now()
-WHERE gift_id=$1`, req.GiftID, req.Slug, req.StartDate, req.GiftsPerRound, supply); err != nil {
-			return fmt.Errorf("update catalog auction flags: %w", err)
+SET availability_remains=$2, updated_at=now()
+WHERE gift_id=$1`, req.GiftID, supply); err != nil {
+			return fmt.Errorf("update catalog availability: %w", err)
 		}
 
 		if _, err := tx.Exec(ctx, `
 UPDATE star_gift_catalog_revisions
-SET auction=true, auction_slug=$2, auction_start_date=$3, gifts_per_round=$4, availability_remains=$5, availability_total=$5
+SET auction=true, auction_slug=$2, auction_start_date=$3, gifts_per_round=$4, availability_total=$5
 WHERE gift_id=$1 AND id=(SELECT active_revision_id FROM star_gift_catalog WHERE gift_id=$1)`,
 			req.GiftID, req.Slug, req.StartDate, req.GiftsPerRound, supply); err != nil {
 			return fmt.Errorf("update catalog revision auction flags: %w", err)
@@ -1280,7 +1280,7 @@ func (s *StarGiftLifecycleStore) CancelStarGiftAuction(ctx context.Context, gift
 		if _, err := tx.Exec(ctx, `UPDATE star_gift_auctions SET status='cancelled', version=version+1, updated_at=now() WHERE gift_id=$1`, giftID); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE star_gift_catalog SET auction=false, updated_at=now() WHERE gift_id=$1`, giftID); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE star_gift_catalog_revisions SET auction=false WHERE gift_id=$1 AND id=(SELECT active_revision_id FROM star_gift_catalog WHERE gift_id=$1)`, giftID); err != nil {
 			return err
 		}
 		return s.refundUnreachableAuctionBids(ctx, tx, giftID, 0, true, now)
