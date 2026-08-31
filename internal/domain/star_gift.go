@@ -799,6 +799,37 @@ type StarGiftAuctionAcquired struct {
 	NameHidden bool
 }
 
+type StarGiftAuctionCreateRequest struct {
+	GiftID        int64
+	Slug          string
+	GiftsPerRound int
+	RoundDuration int
+	TotalRounds   int
+	MinBidAmount  int64
+	StartDate     int
+}
+
+type StarGiftAuctionAdminRow struct {
+	GiftID        int64
+	GiftTitle     string
+	Slug          string
+	Status        string
+	StartDate     int
+	EndDate       int
+	RoundDuration int
+	GiftsPerRound int
+	TotalRounds   int
+	CurrentRound  int
+	NextRoundAt   int
+	LastGiftNum   int
+	GiftsLeft     int
+	MinBidAmount  int64
+	ActiveBids    int
+	TotalBids     int
+	TotalVolume   int64
+	WinnersCount  int
+}
+
 type StarGiftWithdrawalRequest struct {
 	UserID int64
 	Ref    SavedStarGiftRef

@@ -782,6 +782,18 @@ func (fakeService) SetStarGiftSortOrder(_ context.Context, req admin.SetStarGift
 	return admin.CommandResult{CommandID: req.CommandID, Status: "completed", DryRun: req.DryRun}, nil
 }
 
+func (fakeService) CreateStarGiftAuction(_ context.Context, req admin.CreateStarGiftAuctionRequest) (admin.CommandResult, error) {
+	return admin.CommandResult{CommandID: req.CommandID, Status: "completed", DryRun: req.DryRun}, nil
+}
+
+func (fakeService) CancelStarGiftAuction(_ context.Context, req admin.CancelStarGiftAuctionRequest) (admin.CommandResult, error) {
+	return admin.CommandResult{CommandID: req.CommandID, Status: "completed", DryRun: req.DryRun}, nil
+}
+
+func (fakeService) ListStarGiftAuctions(context.Context) ([]domain.StarGiftAuctionAdminRow, error) {
+	return nil, nil
+}
+
 func (fakeService) StarGiftAnimation(context.Context, int64) ([]byte, bool, error) {
 	return []byte(`{"v":"5.7","w":512,"h":512}`), true, nil
 }

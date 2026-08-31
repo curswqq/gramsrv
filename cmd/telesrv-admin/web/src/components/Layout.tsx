@@ -22,6 +22,7 @@ import {
   UserCog,
   Users,
 	Gift,
+	Gavel,
 	Send
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
@@ -122,6 +123,7 @@ export function Shell({
 		  )}
 		  <NavLink icon={<Database size={16} />} href="/storage" route={route} navigate={navigate}>{t("layout.storage")}</NavLink>
 			<NavLink icon={<Gift size={16} />} href="/gifts" route={route} navigate={navigate}>{t("layout.gifts")}</NavLink>
+			<NavLink icon={<Gavel size={16} />} href="/auctions" route={route} navigate={navigate}>{t("layout.auctions")}</NavLink>
           <NavLink icon={<Send size={16} />} href="/give-gifts" route={route} navigate={navigate}>{t("layout.giveGifts")}</NavLink>
           <NavLink icon={<Sticker size={16} />} href="/stickers" route={route} navigate={navigate}>{t("layout.stickers")}</NavLink>
           <NavLink icon={<Smile size={16} />} href="/emoji" route={route} navigate={navigate}>{t("layout.emoji")}</NavLink>

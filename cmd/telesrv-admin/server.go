@@ -158,6 +158,9 @@ func (s *server) routes() http.Handler {
 	mux.Handle("POST /api/actions/set-gift-enabled", s.requireAuthAPI(http.HandlerFunc(s.handleSetStarGiftEnabledAPI)))
 	mux.Handle("POST /api/actions/set-gift-sort-order", s.requireAuthAPI(http.HandlerFunc(s.handleSetStarGiftSortOrderAPI)))
 	mux.Handle("POST /api/actions/give-gift", s.requireAuthAPI(http.HandlerFunc(s.handleGiveGiftAPI)))
+	mux.Handle("GET /api/star-gift-auctions", s.requireAuthAPI(http.HandlerFunc(s.handleStarGiftAuctionsAPI)))
+	mux.Handle("POST /api/actions/create-star-gift-auction", s.requireAuthAPI(http.HandlerFunc(s.handleCreateStarGiftAuctionAPI)))
+	mux.Handle("POST /api/actions/cancel-star-gift-auction", s.requireAuthAPI(http.HandlerFunc(s.handleCancelStarGiftAuctionAPI)))
 	mux.Handle("POST /api/actions/mint-collectible-username", s.requireAuthAPI(http.HandlerFunc(s.handleMintCollectibleUsernameAPI)))
 	mux.Handle("POST /api/actions/mint-collectible-phone", s.requireAuthAPI(http.HandlerFunc(s.handleMintCollectiblePhoneAPI)))
 	mux.Handle("POST /api/actions/update-collectible-phone-price", s.requireAuthAPI(http.HandlerFunc(s.handleUpdateCollectiblePhonePriceAPI)))
@@ -399,6 +402,19 @@ func (s *server) handleStarGiftsAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"Gifts": rows})
+}
+
+func (s *server) handleStarGiftAuctionsAPI(w http.ResponseWriter, r *http.Request) {
+	if s.read == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "read store is not configured")
+		return
+	}
+	rows, err := s.read.ListStarGiftAuctions(r.Context())
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"Auctions": rows})
 }
 
 func (s *server) handleEmojiAPI(w http.ResponseWriter, r *http.Request) {
@@ -2349,6 +2365,58 @@ func (s *server) handleGiveGiftAPI(w http.ResponseWriter, r *http.Request) {
 		BackdropAttributeID: body.BackdropAttributeID,
 	}
 	result, err := s.callAdminAPI(r.Context(), "/v1/gifts/give", req)
+	writeCommandResultAPI(w, result, err)
+}
+
+type createStarGiftAuctionAPIRequest struct {
+	CommandID     string `json:"command_id"`
+	Reason        string `json:"reason"`
+	Confirm       bool   `json:"confirm"`
+	GiftID        int64  `json:"gift_id,string"`
+	Slug          string `json:"slug"`
+	GiftsPerRound int    `json:"gifts_per_round"`
+	RoundDuration int    `json:"round_duration"`
+	TotalRounds   int    `json:"total_rounds"`
+	MinBidAmount  int64  `json:"min_bid_amount,string"`
+	StartDate     int    `json:"start_date"`
+}
+
+func (s *server) handleCreateStarGiftAuctionAPI(w http.ResponseWriter, r *http.Request) {
+	var body createStarGiftAuctionAPIRequest
+	if !decodeAction(w, r, &body) {
+		return
+	}
+	req := admin.CreateStarGiftAuctionRequest{
+		CommandMeta:   s.commandMetaFromAPI(r, body.CommandID, body.Reason, body.Confirm, "create-star-gift-auction"),
+		GiftID:        body.GiftID,
+		Slug:          body.Slug,
+		GiftsPerRound: body.GiftsPerRound,
+		RoundDuration: body.RoundDuration,
+		TotalRounds:   body.TotalRounds,
+		MinBidAmount:  body.MinBidAmount,
+		StartDate:     body.StartDate,
+	}
+	result, err := s.callAdminAPI(r.Context(), "/v1/gifts/auctions/create", req)
+	writeCommandResultAPI(w, result, err)
+}
+
+type cancelStarGiftAuctionAPIRequest struct {
+	CommandID string `json:"command_id"`
+	Reason    string `json:"reason"`
+	Confirm   bool   `json:"confirm"`
+	GiftID    int64  `json:"gift_id,string"`
+}
+
+func (s *server) handleCancelStarGiftAuctionAPI(w http.ResponseWriter, r *http.Request) {
+	var body cancelStarGiftAuctionAPIRequest
+	if !decodeAction(w, r, &body) {
+		return
+	}
+	req := admin.CancelStarGiftAuctionRequest{
+		CommandMeta: s.commandMetaFromAPI(r, body.CommandID, body.Reason, body.Confirm, "cancel-star-gift-auction"),
+		GiftID:      body.GiftID,
+	}
+	result, err := s.callAdminAPI(r.Context(), "/v1/gifts/auctions/cancel", req)
 	writeCommandResultAPI(w, result, err)
 }
 

@@ -20,6 +20,7 @@ import { GroupMessagesPage } from "./GroupMessagesPage";
 import { MessageDetailPage } from "./MessageDetailPage";
 import { MessagesPage } from "./MessagesPage";
 import { GiftsPage } from "./GiftsPage";
+import { AuctionsPage } from "./AuctionsPage";
 import { GiveGiftsPage } from "./GiveGiftsPage";
 import { ModerationCaseDetailPage } from "./ModerationCaseDetailPage";
 import { ModerationCasesPage } from "./ModerationCasesPage";
@@ -151,6 +152,9 @@ export function Routes({ route, navigate }: { route: RouteState; navigate: Navig
 	}
 	if (route.path === "/gifts") {
 		return <GiftsPage />;
+	}
+	if (route.path === "/auctions") {
+		return <AuctionsPage />;
 	}
 	if (route.path === "/give-gifts") {
 		return <GiveGiftsPage />;

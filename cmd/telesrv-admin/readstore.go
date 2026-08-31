@@ -420,28 +420,32 @@ type ChannelDetail struct {
 }
 
 type StarGiftRow struct {
-	GiftID        int64 `json:"GiftID,string"`
-	RevisionID    int64 `json:"RevisionID,string"`
-	Revision      int
-	Title         string
-	Stars         int64 `json:"Stars,string"`
-	ConvertStars  int64 `json:"ConvertStars,string"`
-	Enabled       bool
-	SortOrder     int
-	DocumentID    int64 `json:"DocumentID,string"`
-	SourceName    string
-	SourceFormat  string
-	AnimationSHA  string
-	AnimationSize int64 `json:"AnimationSize,string"`
-	Width         int
-	Height        int
-	FrameRate     float64
-	ReceivedCount int64 `json:"ReceivedCount,string"`
-	UpgradeStars  int64 `json:"UpgradeStars,string"`
-	UpgradeSupply int
-	UpgradeIssued int
-	CreatedBy     string
-	UpdatedAt     time.Time
+	GiftID           int64 `json:"GiftID,string"`
+	RevisionID       int64 `json:"RevisionID,string"`
+	Revision         int
+	Title            string
+	Stars            int64 `json:"Stars,string"`
+	ConvertStars     int64 `json:"ConvertStars,string"`
+	Enabled          bool
+	SortOrder        int
+	DocumentID       int64 `json:"DocumentID,string"`
+	SourceName       string
+	SourceFormat     string
+	AnimationSHA     string
+	AnimationSize    int64 `json:"AnimationSize,string"`
+	Width            int
+	Height           int
+	FrameRate        float64
+	ReceivedCount    int64 `json:"ReceivedCount,string"`
+	UpgradeStars     int64 `json:"UpgradeStars,string"`
+	UpgradeSupply    int
+	UpgradeIssued    int
+	Auction          bool
+	AuctionSlug      string
+	AuctionStartDate int
+	GiftsPerRound    int
+	CreatedBy        string
+	UpdatedAt        time.Time
 }
 
 func (s *readStore) ListStarGifts(ctx context.Context) ([]StarGiftRow, error) {
@@ -451,6 +455,7 @@ SELECT c.gift_id, r.id, r.revision, r.title, r.stars, r.convert_stars,
        encode(r.animation_sha256, 'hex'), d.size, r.width, r.height, r.frame_rate,
        (SELECT COUNT(*) FROM peer_star_gifts p WHERE p.gift_id = c.gift_id),
        COALESCE(cr.upgrade_stars, 0), COALESCE(cr.supply_total, 0), COALESCE(cr.issued, 0),
+       c.auction, COALESCE(c.auction_slug, ''), COALESCE(c.auction_start_date, 0), COALESCE(c.gifts_per_round, 0),
        r.created_by, c.updated_at
 FROM star_gift_catalog c
 JOIN star_gift_catalog_revisions r ON r.id = c.active_revision_id
@@ -470,7 +475,66 @@ LIMIT $1`, domain.MaxStarGiftCatalogSize)
 			&row.Enabled, &row.SortOrder, &row.DocumentID, &row.SourceName, &row.SourceFormat,
 			&row.AnimationSHA, &row.AnimationSize, &row.Width, &row.Height, &row.FrameRate,
 			&row.ReceivedCount, &row.UpgradeStars, &row.UpgradeSupply, &row.UpgradeIssued,
+			&row.Auction, &row.AuctionSlug, &row.AuctionStartDate, &row.GiftsPerRound,
 			&row.CreatedBy, &row.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+type StarGiftAuctionRow struct {
+	GiftID        int64     `json:"GiftID,string"`
+	GiftTitle     string    `json:"GiftTitle"`
+	Slug          string    `json:"Slug"`
+	Status        string    `json:"Status"`
+	StartDate     int       `json:"StartDate"`
+	EndDate       int       `json:"EndDate"`
+	RoundDuration int       `json:"RoundDuration"`
+	GiftsPerRound int       `json:"GiftsPerRound"`
+	TotalRounds   int       `json:"TotalRounds"`
+	CurrentRound  int       `json:"CurrentRound"`
+	NextRoundAt   int       `json:"NextRoundAt"`
+	LastGiftNum   int       `json:"LastGiftNum"`
+	GiftsLeft     int       `json:"GiftsLeft"`
+	MinBidAmount  int64     `json:"MinBidAmount,string"`
+	ActiveBids    int       `json:"ActiveBids"`
+	TotalBids     int       `json:"TotalBids"`
+	TotalVolume   int64     `json:"TotalVolume,string"`
+	WinnersCount  int       `json:"WinnersCount"`
+	UpdatedAt     time.Time `json:"UpdatedAt"`
+}
+
+func (s *readStore) ListStarGiftAuctions(ctx context.Context) ([]StarGiftAuctionRow, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT
+	a.gift_id, COALESCE(r.title, ''), a.slug, a.status, a.start_date, a.end_date,
+	a.round_duration, a.gifts_per_round, a.total_rounds, a.current_round, a.next_round_at,
+	a.last_gift_num, a.gifts_left, a.min_bid_amount,
+	COALESCE((SELECT COUNT(*) FROM star_gift_auction_bids b WHERE b.gift_id=a.gift_id AND b.active), 0) AS active_bids,
+	COALESCE((SELECT COUNT(*) FROM star_gift_auction_bids b WHERE b.gift_id=a.gift_id), 0) AS total_bids,
+	COALESCE((SELECT SUM(b.amount) FROM star_gift_auction_bids b WHERE b.gift_id=a.gift_id AND b.active), 0) AS total_volume,
+	COALESCE((SELECT COUNT(*) FROM star_gift_auction_acquired q WHERE q.gift_id=a.gift_id), 0) AS winners_count,
+	a.updated_at
+FROM star_gift_auctions a
+LEFT JOIN star_gift_catalog c ON c.gift_id=a.gift_id
+LEFT JOIN star_gift_catalog_revisions r ON r.id=c.active_revision_id
+ORDER BY a.gift_id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list star gift auctions: %w", err)
+	}
+	defer rows.Close()
+	out := make([]StarGiftAuctionRow, 0)
+	for rows.Next() {
+		var row StarGiftAuctionRow
+		if err := rows.Scan(
+			&row.GiftID, &row.GiftTitle, &row.Slug, &row.Status, &row.StartDate, &row.EndDate,
+			&row.RoundDuration, &row.GiftsPerRound, &row.TotalRounds, &row.CurrentRound, &row.NextRoundAt,
+			&row.LastGiftNum, &row.GiftsLeft, &row.MinBidAmount,
+			&row.ActiveBids, &row.TotalBids, &row.TotalVolume, &row.WinnersCount,
+			&row.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

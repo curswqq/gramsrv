@@ -247,11 +247,39 @@ export type StarGiftRow = {
   UpgradeStars: string;
   UpgradeSupply: number;
   UpgradeIssued: number;
+  Auction?: boolean;
+  AuctionSlug?: string;
+  AuctionStartDate?: number;
+  GiftsPerRound?: number;
   CreatedBy: string;
   UpdatedAt: string;
 };
 
 export type StarGiftListResponse = { Gifts: StarGiftRow[] };
+
+export type StarGiftAuctionRow = {
+  GiftID: string;
+  GiftTitle: string;
+  Slug: string;
+  Status: "pending" | "active" | "completed" | "cancelled";
+  StartDate: number;
+  EndDate: number;
+  RoundDuration: number;
+  GiftsPerRound: number;
+  TotalRounds: number;
+  CurrentRound: number;
+  NextRoundAt: number;
+  LastGiftNum: number;
+  GiftsLeft: number;
+  MinBidAmount: string;
+  ActiveBids: number;
+  TotalBids: number;
+  TotalVolume: string;
+  WinnersCount: number;
+  UpdatedAt: string;
+};
+
+export type StarGiftAuctionListResponse = { Auctions: StarGiftAuctionRow[] };
 
 export type OfficialStarGiftRow = {
   source_gift_id: string;

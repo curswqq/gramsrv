@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -1190,4 +1191,134 @@ func maxInt64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+func (s *StarGiftLifecycleStore) CreateStarGiftAuction(ctx context.Context, req domain.StarGiftAuctionCreateRequest) (domain.StarGiftAuction, error) {
+	req.Slug = strings.ToLower(strings.TrimSpace(req.Slug))
+	if s == nil || s.db == nil || req.GiftID <= 0 || req.Slug == "" || req.GiftsPerRound <= 0 || req.TotalRounds <= 0 || req.MinBidAmount <= 0 {
+		return domain.StarGiftAuction{}, domain.ErrStarGiftAuctionUnavailable
+	}
+	if req.RoundDuration <= 0 {
+		req.RoundDuration = starGiftAuctionRoundDuration
+	}
+	now := int(time.Now().Unix())
+	if req.StartDate <= 0 {
+		req.StartDate = now
+	}
+	supply := req.GiftsPerRound * req.TotalRounds
+	endDate := req.StartDate + req.TotalRounds*req.RoundDuration
+	status := "pending"
+	currentRound := 0
+	if now >= req.StartDate {
+		status = "active"
+		currentRound = 1
+	}
+
+	err := withTx(ctx, s.db, "create star gift auction", func(tx pgx.Tx) error {
+		gift, found, err := NewStarGiftStore(tx).CatalogGift(ctx, req.GiftID)
+		if err != nil || !found {
+			return domain.ErrStarGiftNotFound
+		}
+		_ = gift
+		if _, err := tx.Exec(ctx, `
+UPDATE star_gift_catalog
+SET auction=true, auction_slug=$2, auction_start_date=$3, gifts_per_round=$4, availability_remains=$5, availability_total=$5, updated_at=now()
+WHERE gift_id=$1`, req.GiftID, req.Slug, req.StartDate, req.GiftsPerRound, supply); err != nil {
+			return fmt.Errorf("update catalog auction flags: %w", err)
+		}
+
+		if _, err := tx.Exec(ctx, `
+UPDATE star_gift_catalog_revisions
+SET auction=true, auction_slug=$2, auction_start_date=$3, gifts_per_round=$4, availability_remains=$5, availability_total=$5
+WHERE gift_id=$1 AND id=(SELECT active_revision_id FROM star_gift_catalog WHERE gift_id=$1)`,
+			req.GiftID, req.Slug, req.StartDate, req.GiftsPerRound, supply); err != nil {
+			return fmt.Errorf("update catalog revision auction flags: %w", err)
+		}
+
+		if _, err := tx.Exec(ctx, `
+INSERT INTO star_gift_auctions
+	(gift_id, slug, start_date, end_date, round_duration, gifts_per_round, total_rounds,
+	 current_round, next_round_at, gifts_left, min_bid_amount, status)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+ON CONFLICT (gift_id) DO UPDATE SET
+	slug=EXCLUDED.slug, start_date=EXCLUDED.start_date, end_date=EXCLUDED.end_date,
+	round_duration=EXCLUDED.round_duration, gifts_per_round=EXCLUDED.gifts_per_round,
+	total_rounds=EXCLUDED.total_rounds, current_round=EXCLUDED.current_round,
+	next_round_at=EXCLUDED.next_round_at, gifts_left=EXCLUDED.gifts_left,
+	min_bid_amount=EXCLUDED.min_bid_amount, status=EXCLUDED.status, version=star_gift_auctions.version+1,
+	updated_at=now()`,
+			req.GiftID, req.Slug, req.StartDate, endDate, req.RoundDuration, req.GiftsPerRound,
+			req.TotalRounds, currentRound, req.StartDate+req.RoundDuration, supply, req.MinBidAmount, status); err != nil {
+			return fmt.Errorf("insert/update auction: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return domain.StarGiftAuction{}, err
+	}
+	return s.loadStarGiftAuction(ctx, 0, req.GiftID)
+}
+
+func (s *StarGiftLifecycleStore) CancelStarGiftAuction(ctx context.Context, giftID int64, now int) error {
+	if s == nil || s.db == nil || giftID <= 0 {
+		return domain.ErrStarGiftAuctionUnavailable
+	}
+	if now <= 0 {
+		now = int(time.Now().Unix())
+	}
+	return withTx(ctx, s.db, "cancel star gift auction", func(tx pgx.Tx) error {
+		var status string
+		if err := tx.QueryRow(ctx, `SELECT status FROM star_gift_auctions WHERE gift_id=$1 FOR UPDATE`, giftID).Scan(&status); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrStarGiftNotFound
+			}
+			return err
+		}
+		if status == "cancelled" || status == "completed" {
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `UPDATE star_gift_auctions SET status='cancelled', version=version+1, updated_at=now() WHERE gift_id=$1`, giftID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE star_gift_catalog SET auction=false, updated_at=now() WHERE gift_id=$1`, giftID); err != nil {
+			return err
+		}
+		return s.refundUnreachableAuctionBids(ctx, tx, giftID, 0, true, now)
+	})
+}
+
+func (s *StarGiftLifecycleStore) ListStarGiftAuctions(ctx context.Context) ([]domain.StarGiftAuctionAdminRow, error) {
+	if s == nil || s.db == nil {
+		return nil, domain.ErrStarGiftAuctionUnavailable
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT
+	a.gift_id, COALESCE(c.title, ''), a.slug, a.status, a.start_date, a.end_date,
+	a.round_duration, a.gifts_per_round, a.total_rounds, a.current_round, a.next_round_at,
+	a.last_gift_num, a.gifts_left, a.min_bid_amount,
+	COALESCE((SELECT COUNT(*) FROM star_gift_auction_bids b WHERE b.gift_id=a.gift_id AND b.active), 0) AS active_bids,
+	COALESCE((SELECT COUNT(*) FROM star_gift_auction_bids b WHERE b.gift_id=a.gift_id), 0) AS total_bids,
+	COALESCE((SELECT SUM(b.amount) FROM star_gift_auction_bids b WHERE b.gift_id=a.gift_id AND b.active), 0) AS total_volume,
+	COALESCE((SELECT COUNT(*) FROM star_gift_auction_acquired q WHERE q.gift_id=a.gift_id), 0) AS winners_count
+FROM star_gift_auctions a
+LEFT JOIN star_gift_catalog c ON c.gift_id=a.gift_id
+ORDER BY a.gift_id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.StarGiftAuctionAdminRow, 0)
+	for rows.Next() {
+		var row domain.StarGiftAuctionAdminRow
+		if err := rows.Scan(
+			&row.GiftID, &row.GiftTitle, &row.Slug, &row.Status, &row.StartDate, &row.EndDate,
+			&row.RoundDuration, &row.GiftsPerRound, &row.TotalRounds, &row.CurrentRound, &row.NextRoundAt,
+			&row.LastGiftNum, &row.GiftsLeft, &row.MinBidAmount,
+			&row.ActiveBids, &row.TotalBids, &row.TotalVolume, &row.WinnersCount,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }

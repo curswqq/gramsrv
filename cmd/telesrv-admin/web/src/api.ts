@@ -38,6 +38,7 @@ import type {
   PremiumPlansResponse,
   StarGiftCollectiblePreview,
   StarGiftListResponse,
+  StarGiftAuctionListResponse,
   StickerSetListResponse,
   StorageStatsResponse,
   VerificationApplicationDetail,
@@ -246,6 +247,9 @@ export const api = {
       body: JSON.stringify(payload)
     }),
 	gifts: () => request<StarGiftListResponse>("/api/gifts"),
+	auctions: () => request<StarGiftAuctionListResponse>("/api/star-gift-auctions"),
+	createAuction: (payload: Record<string, unknown>) => request<CommandResult>("/api/actions/create-star-gift-auction", { method: "POST", body: JSON.stringify(payload) }),
+	cancelAuction: (payload: Record<string, unknown>) => request<CommandResult>("/api/actions/cancel-star-gift-auction", { method: "POST", body: JSON.stringify(payload) }),
 	officialGifts: () => request<OfficialStarGiftListResponse>("/api/official-gifts"),
 	officialGiftAnimation: (id: string) => request<Record<string, unknown>>(`/api/official-gifts/${encodeURIComponent(id)}/animation`),
 	giftAnimation: (id: string) => request<Record<string, unknown>>(`/api/gifts/${encodeURIComponent(id)}/animation`),

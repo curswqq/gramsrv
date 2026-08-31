@@ -84,6 +84,9 @@ type Service interface {
 	SetStarGiftEnabled(ctx context.Context, req admin.SetStarGiftEnabledRequest) (admin.CommandResult, error)
 	SetStarGiftSortOrder(ctx context.Context, req admin.SetStarGiftSortOrderRequest) (admin.CommandResult, error)
 	GiveGift(ctx context.Context, req admin.GiveGiftRequest) (admin.CommandResult, error)
+	CreateStarGiftAuction(ctx context.Context, req admin.CreateStarGiftAuctionRequest) (admin.CommandResult, error)
+	CancelStarGiftAuction(ctx context.Context, req admin.CancelStarGiftAuctionRequest) (admin.CommandResult, error)
+	ListStarGiftAuctions(ctx context.Context) ([]domain.StarGiftAuctionAdminRow, error)
 	StarGiftAnimation(ctx context.Context, giftID int64) ([]byte, bool, error)
 	EmojiAnimation(ctx context.Context, documentID int64) ([]byte, bool, error)
 	GifCatalog(ctx context.Context) ([]domain.GifCatalogEntry, error)
@@ -277,6 +280,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /v1/gifts/set-enabled", s.authenticated(s.handleSetStarGiftEnabled))
 	mux.HandleFunc("POST /v1/gifts/set-sort-order", s.authenticated(s.handleSetStarGiftSortOrder))
 	mux.HandleFunc("POST /v1/gifts/give", s.authenticated(s.handleGiveGift))
+	mux.HandleFunc("POST /v1/gifts/auctions/create", s.authenticated(s.handleCreateStarGiftAuction))
+	mux.HandleFunc("POST /v1/gifts/auctions/cancel", s.authenticated(s.handleCancelStarGiftAuction))
+	mux.HandleFunc("GET /v1/gifts/auctions", s.authenticated(s.handleListStarGiftAuctions))
 	mux.HandleFunc("GET /v1/gifts/{id}/animation", s.authenticated(s.handleStarGiftAnimation))
 	mux.HandleFunc("GET /v1/emoji/{id}/animation", s.authenticated(s.handleEmojiAnimation))
 	mux.HandleFunc("GET /v1/gif-catalog", s.authenticated(s.handleGifCatalog))
@@ -1160,6 +1166,33 @@ func (s *Server) handleGiveGift(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.svc.GiveGift(r.Context(), req)
 	writeCommandResult(w, result, err)
+}
+
+func (s *Server) handleCreateStarGiftAuction(w http.ResponseWriter, r *http.Request) {
+	var req admin.CreateStarGiftAuctionRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	result, err := s.svc.CreateStarGiftAuction(r.Context(), req)
+	writeCommandResult(w, result, err)
+}
+
+func (s *Server) handleCancelStarGiftAuction(w http.ResponseWriter, r *http.Request) {
+	var req admin.CancelStarGiftAuctionRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	result, err := s.svc.CancelStarGiftAuction(r.Context(), req)
+	writeCommandResult(w, result, err)
+}
+
+func (s *Server) handleListStarGiftAuctions(w http.ResponseWriter, r *http.Request) {
+	items, err := s.svc.ListStarGiftAuctions(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"auctions": items})
 }
 
 func (s *Server) handleStarGiftAnimation(w http.ResponseWriter, r *http.Request) {
