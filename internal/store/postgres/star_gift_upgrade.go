@@ -487,7 +487,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 			if _, err := tx.Exec(ctx, `UPDATE star_gift_collectible_revisions SET issued=issued+1 WHERE id=$1`, revision.ID); err != nil {
 				return fmt.Errorf("increment collectible issuance: %w", err)
 			}
-			if _, err := tx.Exec(ctx, `
+			tag, err := tx.Exec(ctx, `
 UPDATE peer_star_gifts
 SET unique_gift_id=$2, prepaid_upgrade_stars=0, prepaid_upgrade_hash='', convert_stars=0,
     transfer_stars=$3,can_export_at=$4,can_transfer_at=$5,can_resell_at=$6,
@@ -495,8 +495,12 @@ SET unique_gift_id=$2, prepaid_upgrade_stars=0, prepaid_upgrade_hash='', convert
 WHERE id=$1 AND unique_gift_id IS NULL AND lifecycle_status='active'`, locked.ID, uniqueID,
 				s.lifecycle.TransferStars, starGiftReadyAt(req.Date, s.lifecycle.ExportDelaySeconds),
 				starGiftReadyAt(req.Date, s.lifecycle.TransferDelaySeconds), starGiftReadyAt(req.Date, s.lifecycle.ResellDelaySeconds),
-				s.lifecycle.DropOriginalDetailsStars, canCraftAt); err != nil {
+				s.lifecycle.DropOriginalDetailsStars, canCraftAt)
+			if err != nil {
 				return fmt.Errorf("upgrade saved star gift: %w", err)
+			}
+			if tag.RowsAffected() != 1 {
+				return domain.ErrStarGiftAlreadyUpgraded
 			}
 			if _, err := tx.Exec(ctx, `
 INSERT INTO star_gift_upgrade_commands

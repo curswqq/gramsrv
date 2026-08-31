@@ -124,10 +124,14 @@ func (s *StarGiftLifecycleStore) ConvertStarGift(ctx context.Context, req domain
 			}
 		}
 
-		if _, err := tx.Exec(ctx, `UPDATE peer_star_gifts
+		tag, err := tx.Exec(ctx, `UPDATE peer_star_gifts
 			SET converted=true,lifecycle_status='converted',unsaved=true,pinned_order=0
-			WHERE id=$1`, saved.ID); err != nil {
+			WHERE id=$1 AND converted=false AND lifecycle_status='active'`, saved.ID)
+		if err != nil {
 			return fmt.Errorf("mark star gift converted: %w", err)
+		}
+		if tag.RowsAffected() != 1 {
+			return domain.ErrStarGiftAlreadyConverted
 		}
 		if err := removeSavedGiftFromCollections(ctx, tx, saved.Owner, saved.ID); err != nil {
 			return err

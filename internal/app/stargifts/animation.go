@@ -117,7 +117,7 @@ func normalizeAndValidateLottie(data []byte, allowExpressions bool) ([]byte, lot
 		math.IsNaN(meta.FrameRate) || math.IsInf(meta.FrameRate, 0) || meta.FrameRate <= 0 || meta.FrameRate > domain.MaxStarGiftAnimationFrameRate ||
 		math.IsNaN(meta.InPoint) || math.IsInf(meta.InPoint, 0) || meta.InPoint < 0 ||
 		math.IsNaN(meta.OutPoint) || math.IsInf(meta.OutPoint, 0) || meta.OutPoint <= meta.InPoint ||
-		frameSpan > meta.FrameRate*domain.MaxStarGiftAnimationSeconds || len(meta.Layers) == 0 {
+		frameSpan > meta.FrameRate*domain.MaxStarGiftAnimationSeconds || len(meta.Layers) == 0 || len(meta.Layers) > 250 {
 		return nil, lottieMetadata{}, domain.ErrStarGiftFileInvalid
 	}
 	// Telegram animated stickers are self-contained. Reject remote or embedded image assets;
