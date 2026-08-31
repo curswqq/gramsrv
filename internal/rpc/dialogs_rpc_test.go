@@ -338,7 +338,13 @@ func TestDialogFolderRPCsPersistAndRecordUpdates(t *testing.T) {
 	ctx := WithSessionID(WithAuthKeyID(WithUserID(context.Background(), 1000000001), authKeyID), 66)
 	dialogs := &captureDialogs{}
 	updates := &captureUpdates{state: domain.UpdateState{Pts: 21, Date: 1700000500, Seq: 0}}
-	r := New(Config{}, Deps{Dialogs: dialogs, Updates: updates}, zaptest.NewLogger(t), clock.System)
+	r := New(Config{}, Deps{
+		Dialogs: dialogs,
+		Updates: updates,
+		Users: mapUsersService{users: map[int64]domain.User{
+			1000000001: {ID: 1000000001, PremiumUntil: int(time.Now().Add(time.Hour).Unix())},
+		}},
+	}, zaptest.NewLogger(t), clock.System)
 
 	req := &tg.MessagesUpdateDialogFilterRequest{ID: 2}
 	req.SetFilter(&tg.DialogFilter{

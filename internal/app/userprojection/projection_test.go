@@ -326,7 +326,7 @@ func TestProjectorAccountFreezeIsViewerScopedAndReversible(t *testing.T) {
 		otherViewer  = int64(4002)
 	)
 	freezes := &fakeAccountFreezes{items: map[int64]domain.AccountFreeze{
-		frozenUserID: {UserID: frozenUserID, Frozen: true, Version: 3},
+		frozenUserID: {UserID: frozenUserID, Frozen: true, Version: 3, BadgeIconDocumentID: 9001},
 	}}
 	projector := New(WithAccountFreezeProvider(freezes))
 	base := []domain.User{{
@@ -343,6 +343,9 @@ func TestProjectorAccountFreezeIsViewerScopedAndReversible(t *testing.T) {
 	got := projectionUser(t, otherView, frozenUserID)
 	if !reflect.DeepEqual(got.RestrictionReasons, domain.AccountFrozenRestrictionReasons()) {
 		t.Fatalf("other-view restriction = %+v, want frozen restriction", got.RestrictionReasons)
+	}
+	if !got.Deleted || !got.PublicFrozen || got.FrozenBadgeIconDocumentID != 9001 || got.FirstName != "" || got.Phone != "" || got.PhotoID != 0 || got.Status.Kind != domain.UserStatusEmpty {
+		t.Fatalf("other-view frozen tombstone = %+v", got)
 	}
 	if base[0].RestrictionReasons[0].Reason != "stale" {
 		t.Fatalf("projection mutated base user: %+v", base[0])
@@ -363,12 +366,15 @@ func TestProjectorAccountFreezeIsViewerScopedAndReversible(t *testing.T) {
 	if reasons := projectionUser(t, batch[otherViewer], frozenUserID).RestrictionReasons; !reflect.DeepEqual(reasons, domain.AccountFrozenRestrictionReasons()) {
 		t.Fatalf("batch other-view restriction = %+v", reasons)
 	}
+	if batchFrozen := projectionUser(t, batch[otherViewer], frozenUserID); !batchFrozen.Deleted || !batchFrozen.PublicFrozen || batchFrozen.FrozenBadgeIconDocumentID != 9001 {
+		t.Fatalf("batch other-view frozen tombstone = %+v", batchFrozen)
+	}
 	if reasons := projectionUser(t, batch[frozenUserID], frozenUserID).RestrictionReasons; len(reasons) != 0 {
 		t.Fatalf("batch self-view restriction = %+v, want none", reasons)
 	}
 
 	freezes.items = nil
-	unfrozenView, err := projector.ForViewer(ctx, otherViewer, otherView)
+	unfrozenView, err := projector.ForViewer(ctx, otherViewer, base)
 	if err != nil {
 		t.Fatalf("ForViewer(after unfreeze): %v", err)
 	}

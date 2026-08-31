@@ -270,14 +270,17 @@ func (s *Service) UpdateUsername(ctx context.Context, userID int64, username str
 		}
 	}
 	if self.Username == username {
-		return self, nil
+		return s.projectOne(ctx, self.ID, self)
 	}
 	u, err := s.users.UpdateUsername(ctx, self.ID, username)
 	if err != nil {
 		return domain.User{}, err
 	}
 	s.refreshCachedUsers(ctx, u)
-	return u, nil
+	// The users row contains only viewer-independent base fields, while
+	// account.updateUsername must return a complete self projection. Returning
+	// the bare row makes clients treat the absent photo as an avatar removal.
+	return s.projectOne(ctx, self.ID, u)
 }
 
 // UpdateProfile 修改当前用户的基础资料。未设置的字段保持原值。
@@ -309,14 +312,14 @@ func (s *Service) UpdateProfile(ctx context.Context, userID int64, update domain
 		return domain.User{}, domain.ErrAboutTooLong
 	}
 	if firstName == self.FirstName && lastName == self.LastName && about == self.About {
-		return self, nil
+		return s.projectOne(ctx, self.ID, self)
 	}
 	u, err := s.users.UpdateProfile(ctx, self.ID, firstName, lastName, about)
 	if err != nil {
 		return domain.User{}, err
 	}
 	s.refreshCachedUsers(ctx, u)
-	return u, nil
+	return s.projectOne(ctx, self.ID, u)
 }
 
 // SetPhone force-sets the authoritative phone for the trusted admin path. It

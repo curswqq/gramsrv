@@ -147,6 +147,10 @@ func (r *Router) onUsersGetFullUser(ctx context.Context, id tg.InputUserClass) (
 	if !found {
 		return emptyUserFull(), nil
 	}
+	u, publicFrozen, err := r.authoritativeFrozenUserProjection(ctx, currentUserID, u)
+	if err != nil {
+		return nil, internalErr()
+	}
 	user := r.tgUser(u)
 	if _, ok := id.(*tg.InputUserSelf); ok || u.ID == currentUserID {
 		user = r.tgSelfUser(u)
@@ -160,6 +164,18 @@ func (r *Router) onUsersGetFullUser(ctx context.Context, id tg.InputUserClass) (
 	}
 	applyPrivateContactRestrictionToUser(user, contactRestriction)
 	r.applyPeerReadModels(ctx, currentUserID, []tg.UserClass{user}, nil)
+	if publicFrozen {
+		full := r.frozenAccountUserFull(ctx, u)
+		if err := r.applyContactPeerStateToUserFull(ctx, currentUserID, u.ID, &full); err != nil {
+			return nil, err
+		}
+		r.applyNotifySettingsToUserFull(ctx, currentUserID, u.ID, &full)
+		applyPrivateContactRestrictionToUserFull(&full, contactRestriction)
+		return &tg.UsersUserFull{
+			FullUser: full,
+			Users:    []tg.UserClass{user},
+		}, nil
+	}
 	loadEpoch := r.userFullProjectionCache.LoadEpoch()
 	if full, ok := r.userFullProjectionCache.Lookup(currentUserID, u.ID); ok {
 		if !applyContactNoteToUserFull(u, &full) {
@@ -209,6 +225,61 @@ func (r *Router) onUsersGetFullUser(ctx context.Context, id tg.InputUserClass) (
 		Users:    []tg.UserClass{user},
 		Chats:    chats,
 	}, nil
+}
+
+// authoritativeFrozenUserProjection is the final profile-boundary check for
+// users.getFullUser and freeze update pushes. Normal user hydration already
+// applies the same viewer projection, but the durable fact is intentionally
+// checked again here: a stale profile/read-model cache must never leak the
+// original name, photo or bio after an account has been frozen.
+func (r *Router) authoritativeFrozenUserProjection(ctx context.Context, viewerUserID int64, user domain.User) (domain.User, bool, error) {
+	if viewerUserID == 0 || user.ID == 0 || user.ID == viewerUserID {
+		return user, false, nil
+	}
+	if r.deps.AccountFreeze == nil {
+		return user, user.PublicFrozen, nil
+	}
+	freeze, found, err := r.deps.AccountFreeze.AccountFreeze(ctx, user.ID)
+	if err != nil {
+		return domain.User{}, false, err
+	}
+	if !found || !freeze.Frozen {
+		return user, false, nil
+	}
+	return domain.User{
+		ID:                        user.ID,
+		AccessHash:                user.AccessHash,
+		Deleted:                   true,
+		PublicFrozen:              true,
+		FrozenBadgeIconDocumentID: freeze.BadgeIconDocumentID,
+		Status:                    domain.UserStatus{Kind: domain.UserStatusEmpty},
+		RestrictionReasons:        domain.AccountFrozenRestrictionReasons(),
+	}, true, nil
+}
+
+func (r *Router) frozenAccountUserFull(ctx context.Context, u domain.User) tg.UserFull {
+	description := "The account was frozen."
+	if clientSessionMetadataFromContext(ctx).PreferredLanguage() == "ru" {
+		description = "Аккаунт заморожен."
+	}
+	full := tg.UserFull{
+		ID:             u.ID,
+		About:          description,
+		Settings:       tg.PeerSettings{},
+		NotifySettings: *tdesktop.NotifySettings(),
+	}
+	botID := r.cfg.AccountFreezeBadgeBotUserID
+	if botID <= 0 {
+		botID = domain.VerifierBotUserID
+	}
+	if u.FrozenBadgeIconDocumentID > 0 {
+		full.SetBotVerification(tg.BotVerification{
+			BotID:       botID,
+			Icon:        u.FrozenBadgeIconDocumentID,
+			Description: description,
+		})
+	}
+	return full
 }
 
 // applyContactPeerStateToUserFull keeps users.getFullUser on the same

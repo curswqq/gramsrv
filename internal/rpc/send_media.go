@@ -102,6 +102,12 @@ func (r *Router) mediaReplyInputForDestination(ctx context.Context, userID int64
 // sendOutgoing 把一条出站消息落地到私聊或频道，返回 *tg.Updates、是否重复、错误。
 // media 为空即纯文本。校验（长度/random_id/限流）由调用方完成。
 func (r *Router) sendOutgoing(ctx context.Context, userID int64, peer domain.Peer, p outgoingSend) (tg.UpdatesClass, bool, error) {
+	if connection, ok := businessConnectionFrom(ctx); ok {
+		if connection.OwnerUserID != userID || !connection.Rights.Reply {
+			return nil, false, botAccessForbiddenErr()
+		}
+		p.viaBotID = connection.BotUserID
+	}
 	sendAs := p.sendAs
 	if !p.sendAsReady {
 		resolved, err := r.resolveSendAsPeer(ctx, userID, peer, p.sendAsInput)
@@ -260,6 +266,7 @@ func (r *Router) sendOutgoing(ctx context.Context, userID int64, peer domain.Pee
 		// 链接预览 pending 占位：带外解析并就地替换（异步，不阻塞发送 echo）。
 		r.maybeEnqueueWebPageResolve(userID, peer, res.SenderMessage.ID, res.SenderMessage.Media)
 		r.enqueueBotAPIPrivateMessageUpdateAsync(ctx, res)
+		r.pushConnectedBusinessIncomingMessage(ctx, res)
 		if res.SenderStarsBalance != nil {
 			_ = r.NotifyStarsBalanceChanged(ctx, *res.SenderStarsBalance)
 		}
@@ -281,6 +288,9 @@ func (r *Router) sendOutgoing(ctx context.Context, userID int64, peer domain.Pee
 
 // onMessagesUploadMedia 解析 InputMedia（上传或引用），返回可复用的 tg.MessageMedia。
 func (r *Router) onMessagesUploadMedia(ctx context.Context, req *tg.MessagesUploadMediaRequest) (tg.MessageMediaClass, error) {
+	if req == nil {
+		return nil, inputRequestInvalidErr()
+	}
 	userID, _, err := r.currentUserID(ctx)
 	if err != nil {
 		return nil, internalErr()
@@ -290,6 +300,21 @@ func (r *Router) onMessagesUploadMedia(ctx context.Context, req *tg.MessagesUplo
 	}
 	if len(req.BusinessConnectionID) > maxBusinessConnIDLength {
 		return nil, limitInvalidErr()
+	}
+	if req.BusinessConnectionID != "" {
+		botUserID := userID
+		if !r.userIsBot(ctx, botUserID) {
+			return nil, businessConnectionNotAllowedErr()
+		}
+		connection, err := r.resolveBusinessConnectionForBot(ctx, req.BusinessConnectionID, botUserID)
+		if err != nil {
+			return nil, err
+		}
+		if !connection.Rights.Reply {
+			return nil, botAccessForbiddenErr()
+		}
+		userID = connection.OwnerUserID
+		ctx = WithUserID(withBusinessConnection(ctx, connection), userID)
 	}
 	if _, ok := req.Peer.(*tg.InputPeerEmpty); !ok {
 		if _, err := r.checkedDomainPeerFromInputPeer(ctx, userID, req.Peer); err != nil {
@@ -311,6 +336,9 @@ func (r *Router) onMessagesUploadMedia(ctx context.Context, req *tg.MessagesUplo
 
 // onMessagesSendMedia 发送一条带媒体的消息（photo/document/sticker），私聊与频道均支持。
 func (r *Router) onMessagesSendMedia(ctx context.Context, req *tg.MessagesSendMediaRequest) (tg.UpdatesClass, error) {
+	if req == nil {
+		return nil, inputRequestInvalidErr()
+	}
 	if req.RandomID == 0 {
 		return nil, randomIDEmptyErr()
 	}
@@ -325,6 +353,9 @@ func (r *Router) onMessagesSendMedia(ctx context.Context, req *tg.MessagesSendMe
 	}
 	if req.Media == nil {
 		return nil, mediaInvalidErr()
+	}
+	if req.QuickReplyShortcut != nil {
+		return r.onMessagesSaveQuickReplyMedia(ctx, req)
 	}
 	// InputMediaEmpty / WebPage：退化为纯文本发送（复用 sendMessage 校验与流程，含 url 实体补全）。
 	switch req.Media.(type) {

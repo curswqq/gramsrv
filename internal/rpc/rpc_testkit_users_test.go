@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"telesrv/internal/domain"
+	"time"
 )
 
 type staticUsersService struct {
@@ -74,6 +75,11 @@ func (s mapUsersService) ByIDs(_ context.Context, _ int64, userIDs []int64) ([]d
 		}
 	}
 	return out, nil
+}
+
+func (s mapUsersService) PremiumActive(_ context.Context, userID int64) bool {
+	u, ok := s.users[userID]
+	return ok && u.PremiumActiveAt(time.Now().Unix())
 }
 
 func (s *countingMapUsersService) ByID(ctx context.Context, currentUserID, userID int64) (domain.User, bool, error) {

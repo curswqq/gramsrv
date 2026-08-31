@@ -48,6 +48,9 @@ func TestBusinessProfileAndChatLinks(t *testing.T) {
 	if got.Location == nil || got.Intro == nil {
 		t.Fatalf("profile = %+v, want location and intro", got)
 	}
+	if updated, err := svc.UpdateSponsoredMessages(ctx, userID, true); err != nil || !updated.SponsoredMessagesEnabled {
+		t.Fatalf("UpdateSponsoredMessages = %+v err=%v", updated, err)
+	}
 
 	link, err := svc.CreateBusinessChatLink(ctx, userID, domain.BusinessChatLinkInput{
 		Message: "Hello from link",
@@ -88,6 +91,50 @@ func TestBusinessProfileAndChatLinks(t *testing.T) {
 	}
 	if _, found, err := svc.ResolveBusinessChatLink(ctx, link.Slug, false); err != nil || found {
 		t.Fatalf("Resolve deleted found=%v err=%v", found, err)
+	}
+}
+
+func TestNormalizeBusinessWorkHoursMergesWeeklyBoundary(t *testing.T) {
+	hours, err := normalizeBusinessWorkHours(&domain.BusinessWorkHours{
+		TimezoneID: "UTC",
+		WeeklyOpen: []domain.BusinessWeeklyOpen{
+			{StartMinute: 60, EndMinute: 180},
+			{StartMinute: 6*24*60 + 16*60, EndMinute: 7*24*60 + 60},
+			{StartMinute: 120, EndMinute: 240},
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalizeBusinessWorkHours: %v", err)
+	}
+	want := []domain.BusinessWeeklyOpen{
+		{StartMinute: 6*24*60 + 16*60, EndMinute: 7*24*60 + 4*60},
+	}
+	if len(hours.WeeklyOpen) != len(want) || hours.WeeklyOpen[0] != want[0] {
+		t.Fatalf("weekly_open = %+v, want %+v", hours.WeeklyOpen, want)
+	}
+}
+
+func TestNormalizeBusinessWorkHoursRejectsUnknownTimezone(t *testing.T) {
+	_, err := normalizeBusinessWorkHours(&domain.BusinessWorkHours{
+		TimezoneID: "Mars/Olympus_Mons",
+		WeeklyOpen: []domain.BusinessWeeklyOpen{{StartMinute: 0, EndMinute: 60}},
+	})
+	if !errors.Is(err, domain.ErrBusinessProfileInvalid) {
+		t.Fatalf("err = %v, want ErrBusinessProfileInvalid", err)
+	}
+}
+
+func TestNormalizeBusinessRecipientsAcceptsExcludeNobodyAsAllChats(t *testing.T) {
+	got, err := normalizeBusinessRecipients(domain.BusinessRecipients{ExcludeSelected: true})
+	if err != nil {
+		t.Fatalf("normalize exclude-nobody recipients: %v", err)
+	}
+	if !got.ExcludeSelected || len(got.Users) != 0 {
+		t.Fatalf("recipients = %+v, want exclude-selected with empty exclusions", got)
+	}
+
+	if _, err := normalizeBusinessRecipients(domain.BusinessRecipients{}); !errors.Is(err, domain.ErrBusinessProfileInvalid) {
+		t.Fatalf("empty inclusive recipients err = %v, want ErrBusinessProfileInvalid", err)
 	}
 }
 

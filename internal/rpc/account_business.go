@@ -18,10 +18,20 @@ func (r *Router) accountBusinessAutomation() (AccountBusinessAutomationService, 
 	return svc, ok
 }
 
+func (r *Router) requireBusinessPremium(ctx context.Context, userID int64) error {
+	if !r.viewerPremium(ctx, userID) {
+		return premiumAccountRequiredErr()
+	}
+	return nil
+}
+
 func (r *Router) onAccountUpdateBusinessWorkHours(ctx context.Context, req *tg.AccountUpdateBusinessWorkHoursRequest) (bool, error) {
 	userID, _, err := r.currentUserID(ctx)
 	if err != nil {
 		return false, internalErr()
+	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return false, err
 	}
 	svc, ok := r.accountBusinessAutomation()
 	if !ok {
@@ -35,6 +45,7 @@ func (r *Router) onAccountUpdateBusinessWorkHours(ctx context.Context, req *tg.A
 		return false, businessAutomationErr(err)
 	}
 	r.invalidateRPCProjectionForUser(userID)
+	r.pushBusinessProfileChanged(ctx, userID)
 	return true, nil
 }
 
@@ -42,6 +53,9 @@ func (r *Router) onAccountUpdateBusinessLocation(ctx context.Context, req *tg.Ac
 	userID, _, err := r.currentUserID(ctx)
 	if err != nil {
 		return false, internalErr()
+	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return false, err
 	}
 	svc, ok := r.accountBusinessAutomation()
 	if !ok {
@@ -55,6 +69,7 @@ func (r *Router) onAccountUpdateBusinessLocation(ctx context.Context, req *tg.Ac
 		return false, businessAutomationErr(err)
 	}
 	r.invalidateRPCProjectionForUser(userID)
+	r.pushBusinessProfileChanged(ctx, userID)
 	return true, nil
 }
 
@@ -62,6 +77,9 @@ func (r *Router) onAccountUpdateBusinessIntro(ctx context.Context, req *tg.Accou
 	userID, _, err := r.currentUserID(ctx)
 	if err != nil {
 		return false, internalErr()
+	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return false, err
 	}
 	svc, ok := r.accountBusinessAutomation()
 	if !ok {
@@ -75,6 +93,7 @@ func (r *Router) onAccountUpdateBusinessIntro(ctx context.Context, req *tg.Accou
 		return false, businessAutomationErr(err)
 	}
 	r.invalidateRPCProjectionForUser(userID)
+	r.pushBusinessProfileChanged(ctx, userID)
 	return true, nil
 }
 
@@ -82,6 +101,9 @@ func (r *Router) onAccountUpdateBusinessGreetingMessage(ctx context.Context, req
 	userID, _, err := r.currentUserID(ctx)
 	if err != nil {
 		return false, internalErr()
+	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return false, err
 	}
 	svc, ok := r.accountBusinessAutomation()
 	if !ok {
@@ -91,10 +113,16 @@ func (r *Router) onAccountUpdateBusinessGreetingMessage(ctx context.Context, req
 	if err != nil {
 		return false, err
 	}
+	if greeting != nil {
+		if _, err := svc.GetQuickReplyMessages(ctx, userID, greeting.ShortcutID, nil); err != nil {
+			return false, businessAutomationErr(err)
+		}
+	}
 	if _, err := svc.UpdateBusinessGreetingMessage(ctx, userID, greeting); err != nil {
 		return false, businessAutomationErr(err)
 	}
 	r.invalidateRPCProjectionForUser(userID)
+	r.pushBusinessProfileChanged(ctx, userID)
 	return true, nil
 }
 
@@ -102,6 +130,9 @@ func (r *Router) onAccountUpdateBusinessAwayMessage(ctx context.Context, req *tg
 	userID, _, err := r.currentUserID(ctx)
 	if err != nil {
 		return false, internalErr()
+	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return false, err
 	}
 	svc, ok := r.accountBusinessAutomation()
 	if !ok {
@@ -111,10 +142,36 @@ func (r *Router) onAccountUpdateBusinessAwayMessage(ctx context.Context, req *tg
 	if err != nil {
 		return false, err
 	}
+	if away != nil {
+		if _, err := svc.GetQuickReplyMessages(ctx, userID, away.ShortcutID, nil); err != nil {
+			return false, businessAutomationErr(err)
+		}
+	}
 	if _, err := svc.UpdateBusinessAwayMessage(ctx, userID, away); err != nil {
 		return false, businessAutomationErr(err)
 	}
 	r.invalidateRPCProjectionForUser(userID)
+	r.pushBusinessProfileChanged(ctx, userID)
+	return true, nil
+}
+
+func (r *Router) onAccountToggleSponsoredMessages(ctx context.Context, enabled bool) (bool, error) {
+	userID, _, err := r.currentUserID(ctx)
+	if err != nil {
+		return false, internalErr()
+	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return false, err
+	}
+	svc, ok := r.accountBusinessAutomation()
+	if !ok {
+		return false, premiumAccountRequiredErr()
+	}
+	if _, err := svc.UpdateSponsoredMessages(ctx, userID, enabled); err != nil {
+		return false, businessAutomationErr(err)
+	}
+	r.invalidateRPCProjectionForUser(userID)
+	r.pushBusinessProfileChanged(ctx, userID)
 	return true, nil
 }
 
@@ -147,6 +204,9 @@ func (r *Router) onAccountCreateBusinessChatLink(ctx context.Context, link tg.In
 	if err != nil {
 		return nil, internalErr()
 	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return nil, err
+	}
 	svc, ok := r.accountBusinessAutomation()
 	if !ok {
 		return nil, premiumAccountRequiredErr()
@@ -167,6 +227,9 @@ func (r *Router) onAccountEditBusinessChatLink(ctx context.Context, req *tg.Acco
 	userID, _, err := r.currentUserID(ctx)
 	if err != nil {
 		return nil, internalErr()
+	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return nil, err
 	}
 	if req == nil || strings.TrimSpace(req.Slug) == "" {
 		return nil, chatlinkSlugEmptyErr()
@@ -191,6 +254,9 @@ func (r *Router) onAccountDeleteBusinessChatLink(ctx context.Context, slug strin
 	userID, _, err := r.currentUserID(ctx)
 	if err != nil {
 		return false, internalErr()
+	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return false, err
 	}
 	if strings.TrimSpace(slug) == "" {
 		return false, chatlinkSlugEmptyErr()
@@ -280,6 +346,28 @@ func (r *Router) onAccountGetConnectedBots(ctx context.Context) (*tg.AccountConn
 	return out, nil
 }
 
+func (r *Router) onAccountGetBotBusinessConnection(ctx context.Context, connectionID string) (tg.UpdatesClass, error) {
+	botUserID, _, err := r.currentUserID(ctx)
+	if err != nil {
+		return nil, internalErr()
+	}
+	if !r.userIsBot(ctx, botUserID) {
+		return nil, businessConnectionNotAllowedErr()
+	}
+	svc, ok := r.accountBusinessAutomation()
+	if !ok {
+		return nil, businessConnectionInvalidErr()
+	}
+	connection, found, err := svc.GetConnectedBusinessBotByConnectionID(ctx, strings.TrimSpace(connectionID))
+	if err != nil {
+		return nil, internalErr()
+	}
+	if !found || connection.BotUserID != botUserID {
+		return nil, businessConnectionInvalidErr()
+	}
+	return r.businessConnectionUpdates(ctx, botUserID, connection, false), nil
+}
+
 func (r *Router) onAccountUpdateConnectedBot(ctx context.Context, req *tg.AccountUpdateConnectedBotRequest) (tg.UpdatesClass, error) {
 	if req == nil {
 		return nil, inputRequestInvalidErr()
@@ -290,7 +378,7 @@ func (r *Router) onAccountUpdateConnectedBot(ctx context.Context, req *tg.Accoun
 	}
 	svc, ok := r.accountBusinessAutomation()
 	if !ok {
-		return nil, premiumAccountRequiredErr()
+		return nil, botBusinessMissingErr()
 	}
 	botUser, found, err := r.connectedBusinessBotFromInput(ctx, userID, req.Bot)
 	if err != nil {
@@ -300,10 +388,17 @@ func (r *Router) onAccountUpdateConnectedBot(ctx context.Context, req *tg.Accoun
 		return nil, botBusinessMissingErr()
 	}
 	if req.Deleted {
+		previous, previousFound, err := svc.GetConnectedBusinessBot(ctx, userID)
+		if err != nil {
+			return nil, internalErr()
+		}
 		if _, err := svc.DeleteConnectedBusinessBot(ctx, userID, botUser.ID); err != nil {
 			return nil, businessAutomationErr(err)
 		}
 		r.invalidateRPCProjectionForViewer(userID)
+		if previousFound && previous.BotUserID == botUser.ID {
+			r.pushBusinessConnectionUpdate(ctx, previous, true)
+		}
 		return r.connectedBusinessBotEmptyUpdates(ctx, userID, botUser), nil
 	}
 	recipients, err := r.domainBusinessBotRecipients(ctx, userID, req.Recipients)
@@ -319,7 +414,36 @@ func (r *Router) onAccountUpdateConnectedBot(ctx context.Context, req *tg.Accoun
 		return nil, businessAutomationErr(err)
 	}
 	r.invalidateRPCProjectionForViewer(userID)
+	r.pushBusinessConnectionUpdate(ctx, saved, false)
 	return r.connectedBusinessBotEmptyUpdates(ctx, userID, botUser, tgConnectedBot(saved)), nil
+}
+
+func (r *Router) businessConnectionUpdates(ctx context.Context, viewerUserID int64, connection domain.ConnectedBusinessBot, disabled bool) *tg.Updates {
+	users := []tg.UserClass{}
+	if r.deps.Users != nil {
+		if owner, found, err := r.deps.Users.ByID(ctx, viewerUserID, connection.OwnerUserID); err == nil && found {
+			users = append(users, r.tgUser(owner))
+		}
+	}
+	now := int(r.clock.Now().Unix())
+	result := &tg.Updates{
+		Updates: []tg.UpdateClass{&tg.UpdateBotBusinessConnect{
+			Connection: tgBotBusinessConnection(connection, r.cfg.DC, disabled),
+			Qts:        now,
+		}},
+		Users: users,
+		Chats: []tg.ChatClass{},
+		Date:  now,
+	}
+	r.applyPeerReadModels(ctx, viewerUserID, result.Users, result.Chats)
+	return result
+}
+
+func (r *Router) pushBusinessConnectionUpdate(ctx context.Context, connection domain.ConnectedBusinessBot, disabled bool) {
+	if connection.BotUserID == 0 || connection.ConnectionID == "" {
+		return
+	}
+	r.pushUserUpdates(ctx, connection.BotUserID, r.businessConnectionUpdates(ctx, connection.BotUserID, connection, disabled))
 }
 
 func (r *Router) onAccountToggleConnectedBotPaused(ctx context.Context, req *tg.AccountToggleConnectedBotPausedRequest) (bool, error) {
@@ -506,6 +630,16 @@ func (r *Router) recordConnectedBusinessPeerSettings(ctx context.Context, userID
 	return nil
 }
 
+func (r *Router) pushBusinessProfileChanged(ctx context.Context, userID int64) {
+	if r.deps.Users == nil || userID == 0 {
+		return
+	}
+	self, err := r.deps.Users.Self(ctx, userID)
+	if err == nil && self.ID == userID {
+		r.pushSelfUserChangedUpdate(ctx, self)
+	}
+}
+
 func premiumAccountRequiredErr() error { return tgerr400("PREMIUM_ACCOUNT_REQUIRED") }
 
 func botBusinessMissingErr() error { return tgerr400("BOT_BUSINESS_MISSING") }
@@ -513,6 +647,12 @@ func botBusinessMissingErr() error { return tgerr400("BOT_BUSINESS_MISSING") }
 func botNotConnectedYetErr() error { return tgerr400("BOT_NOT_CONNECTED_YET") }
 
 func botAlreadyDisabledErr() error { return tgerr400("BOT_ALREADY_DISABLED") }
+
+func businessConnectionInvalidErr() error { return tgerr400("BUSINESS_CONNECTION_INVALID") }
+
+func businessConnectionNotAllowedErr() error { return tgerr400("BUSINESS_CONNECTION_NOT_ALLOWED") }
+
+func botAccessForbiddenErr() error { return tgerr400("BOT_ACCESS_FORBIDDEN") }
 
 func chatlinkSlugEmptyErr() error { return tgerr400("CHATLINK_SLUG_EMPTY") }
 
@@ -554,6 +694,9 @@ func (r *Router) applyBusinessProfileToUserFull(ctx context.Context, full *tg.Us
 		return
 	}
 	if hours, ok := tgBusinessWorkHours(profile.WorkHours); ok {
+		if businessWorkHoursOpenNow(profile.WorkHours, r.clock.Now()) {
+			hours.SetOpenNow(true)
+		}
 		full.SetBusinessWorkHours(hours)
 	}
 	if location, ok := tgBusinessLocation(profile.Location); ok {
@@ -567,5 +710,8 @@ func (r *Router) applyBusinessProfileToUserFull(ctx context.Context, full *tg.Us
 	}
 	if away, ok := tgBusinessAway(profile.Away); ok {
 		full.SetBusinessAwayMessage(away)
+	}
+	if profile.SponsoredMessagesEnabled {
+		full.SetSponsoredEnabled(true)
 	}
 }

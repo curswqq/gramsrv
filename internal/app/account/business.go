@@ -2,8 +2,11 @@ package account
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -90,6 +93,15 @@ func (s *Service) UpdateBusinessAwayMessage(ctx context.Context, userID int64, a
 	return s.saveBusinessProfile(ctx, profile)
 }
 
+func (s *Service) UpdateSponsoredMessages(ctx context.Context, userID int64, enabled bool) (domain.BusinessProfile, error) {
+	profile, err := s.businessProfileForUpdate(ctx, userID)
+	if err != nil {
+		return domain.BusinessProfile{}, err
+	}
+	profile.SponsoredMessagesEnabled = enabled
+	return s.saveBusinessProfile(ctx, profile)
+}
+
 func (s *Service) ListBusinessChatLinks(ctx context.Context, userID int64) ([]domain.BusinessChatLink, error) {
 	if s == nil || s.business == nil || userID == 0 {
 		return nil, nil
@@ -163,6 +175,13 @@ func (s *Service) GetConnectedBusinessBot(ctx context.Context, ownerUserID int64
 	return s.business.GetConnectedBusinessBot(ctx, ownerUserID)
 }
 
+func (s *Service) GetConnectedBusinessBotByConnectionID(ctx context.Context, connectionID string) (domain.ConnectedBusinessBot, bool, error) {
+	if s == nil || s.business == nil || strings.TrimSpace(connectionID) == "" {
+		return domain.ConnectedBusinessBot{}, false, nil
+	}
+	return s.business.GetConnectedBusinessBotByConnectionID(ctx, strings.TrimSpace(connectionID))
+}
+
 func (s *Service) SaveConnectedBusinessBot(ctx context.Context, ownerUserID int64, bot domain.ConnectedBusinessBot) (domain.ConnectedBusinessBot, error) {
 	if s == nil || s.business == nil || ownerUserID == 0 || bot.BotUserID == 0 || bot.BotUserID == ownerUserID {
 		return domain.ConnectedBusinessBot{}, domain.ErrBotBusinessMissing
@@ -173,12 +192,24 @@ func (s *Service) SaveConnectedBusinessBot(ctx context.Context, ownerUserID int6
 	}
 	now := time.Now().Unix()
 	bot.OwnerUserID = ownerUserID
+	bot.ConnectionID, err = randomBusinessConnectionID()
+	if err != nil {
+		return domain.ConnectedBusinessBot{}, err
+	}
 	bot.Recipients = recipients
 	if bot.CreatedAtUnix == 0 {
 		bot.CreatedAtUnix = now
 	}
 	bot.UpdatedAtUnix = now
 	return s.business.SaveConnectedBusinessBot(ctx, bot)
+}
+
+func randomBusinessConnectionID() (string, error) {
+	var raw [24]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate business connection id: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
 func (s *Service) DeleteConnectedBusinessBot(ctx context.Context, ownerUserID, botUserID int64) (bool, error) {
@@ -254,10 +285,20 @@ func (s *Service) SaveQuickReplyText(ctx context.Context, userID int64, shortcut
 	if s == nil || s.business == nil || userID == 0 {
 		return domain.QuickReplyMutation{}, domain.ErrPremiumRequired
 	}
-	if msg.Message == "" || utf8.RuneCountInString(msg.Message) > domain.MaxMessageTextLength || len(msg.Entities) > domain.MaxMessageEntityCount {
+	if (msg.Message == "" && msg.Media.IsZero()) || utf8.RuneCountInString(msg.Message) > domain.MaxMessageTextLength || len(msg.Entities) > domain.MaxMessageEntityCount {
 		return domain.QuickReplyMutation{}, domain.ErrShortcutInvalid
 	}
 	return s.business.SaveQuickReplyText(ctx, userID, shortcut, msg)
+}
+
+func (s *Service) ReplaceQuickReplyMessage(ctx context.Context, userID int64, shortcutID, messageID int, msg domain.QuickReplyMessage) (domain.QuickReplyMutation, error) {
+	if s == nil || s.business == nil || userID == 0 || shortcutID <= 0 || messageID <= 0 {
+		return domain.QuickReplyMutation{}, domain.ErrShortcutInvalid
+	}
+	if (msg.Message == "" && msg.Media.IsZero()) || utf8.RuneCountInString(msg.Message) > domain.MaxMessageTextLength || len(msg.Entities) > domain.MaxMessageEntityCount {
+		return domain.QuickReplyMutation{}, domain.ErrShortcutInvalid
+	}
+	return s.business.ReplaceQuickReplyMessage(ctx, userID, shortcutID, messageID, msg)
 }
 
 func (s *Service) GetQuickReplyMessages(ctx context.Context, userID int64, shortcutID int, ids []int) (domain.QuickReplyMessages, error) {
@@ -325,12 +366,65 @@ func normalizeBusinessWorkHours(in *domain.BusinessWorkHours) (*domain.BusinessW
 	if out.TimezoneID == "" || len(out.WeeklyOpen) == 0 || len(out.WeeklyOpen) > domain.MaxBusinessWorkHourIntervals {
 		return nil, domain.ErrBusinessProfileInvalid
 	}
-	out.WeeklyOpen = append([]domain.BusinessWeeklyOpen(nil), out.WeeklyOpen...)
+	if _, err := time.LoadLocation(out.TimezoneID); err != nil {
+		return nil, domain.ErrBusinessProfileInvalid
+	}
+	const (
+		weekMinutes = 7 * 24 * 60
+		dayMinutes  = 24 * 60
+	)
+	segments := make([]domain.BusinessWeeklyOpen, 0, len(out.WeeklyOpen)+1)
 	for _, item := range out.WeeklyOpen {
-		if item.StartMinute < 0 || item.EndMinute <= item.StartMinute || item.EndMinute > 8*24*60 {
+		if item.StartMinute < 0 || item.StartMinute > 7*24*60 || item.EndMinute <= item.StartMinute ||
+			item.EndMinute > 8*24*60 || item.EndMinute-item.StartMinute > 7*24*60 {
 			return nil, domain.ErrBusinessProfileInvalid
 		}
+		duration := item.EndMinute - item.StartMinute
+		if duration == weekMinutes {
+			segments = []domain.BusinessWeeklyOpen{{StartMinute: 0, EndMinute: weekMinutes}}
+			break
+		}
+		start := item.StartMinute % weekMinutes
+		end := start + duration
+		if end <= weekMinutes {
+			segments = append(segments, domain.BusinessWeeklyOpen{StartMinute: start, EndMinute: end})
+		} else {
+			segments = append(segments,
+				domain.BusinessWeeklyOpen{StartMinute: start, EndMinute: weekMinutes},
+				domain.BusinessWeeklyOpen{StartMinute: 0, EndMinute: end - weekMinutes},
+			)
+		}
 	}
+	sort.SliceStable(segments, func(i, j int) bool {
+		if segments[i].StartMinute == segments[j].StartMinute {
+			return segments[i].EndMinute < segments[j].EndMinute
+		}
+		return segments[i].StartMinute < segments[j].StartMinute
+	})
+	merged := make([]domain.BusinessWeeklyOpen, 0, len(segments))
+	for _, segment := range segments {
+		if len(merged) == 0 || segment.StartMinute > merged[len(merged)-1].EndMinute {
+			merged = append(merged, segment)
+			continue
+		}
+		if segment.EndMinute > merged[len(merged)-1].EndMinute {
+			merged[len(merged)-1].EndMinute = segment.EndMinute
+		}
+	}
+	// Merge a Sunday-to-Monday boundary only when the resulting constructor
+	// remains within Telegram's allowed eighth-day window.
+	if len(merged) > 1 && merged[0].StartMinute == 0 && merged[len(merged)-1].EndMinute == weekMinutes && merged[0].EndMinute <= dayMinutes {
+		wrap := domain.BusinessWeeklyOpen{
+			StartMinute: merged[len(merged)-1].StartMinute,
+			EndMinute:   weekMinutes + merged[0].EndMinute,
+		}
+		merged = append(append([]domain.BusinessWeeklyOpen(nil), merged[1:len(merged)-1]...), wrap)
+		sort.SliceStable(merged, func(i, j int) bool { return merged[i].StartMinute < merged[j].StartMinute })
+	}
+	if len(merged) == 0 || len(merged) > domain.MaxBusinessWorkHourIntervals {
+		return nil, domain.ErrBusinessProfileInvalid
+	}
+	out.WeeklyOpen = merged
 	return &out, nil
 }
 
@@ -431,7 +525,10 @@ func normalizeBusinessRecipients(in domain.BusinessRecipients) (domain.BusinessR
 		users = append(users, id)
 	}
 	out.Users = users
-	if !out.ExistingChats && !out.NewChats && !out.Contacts && !out.NonContacts && len(out.Users) == 0 {
+	// With exclude_selected set, an empty selection means "exclude nobody", i.e.
+	// all private chats. Official clients use exactly this representation for the
+	// default greeting/away audience.
+	if !out.ExcludeSelected && !out.ExistingChats && !out.NewChats && !out.Contacts && !out.NonContacts && len(out.Users) == 0 {
 		return domain.BusinessRecipients{}, domain.ErrBusinessProfileInvalid
 	}
 	return out, nil

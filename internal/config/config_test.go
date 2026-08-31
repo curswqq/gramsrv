@@ -1219,6 +1219,29 @@ func TestLoadBotVerificationDefaults(t *testing.T) {
 	if cfg.BotVerificationRequestRateLimit != 5 || cfg.BotVerificationRequestRateWindow != 24*time.Hour {
 		t.Fatalf("request rate = %d/%v, want 5/24h", cfg.BotVerificationRequestRateLimit, cfg.BotVerificationRequestRateWindow)
 	}
+	if cfg.AccountFreezeBadgeIconDocumentID != 0 || cfg.AccountFreezeBadgeBotUserID != domain.VerifierBotUserID {
+		t.Fatalf("freeze badge = %d/%d, want disabled icon attributed to verifier bot", cfg.AccountFreezeBadgeIconDocumentID, cfg.AccountFreezeBadgeBotUserID)
+	}
+}
+
+func TestLoadAccountFreezeBadgeOverridesAndValidation(t *testing.T) {
+	disableDefaultConfigFile(t)
+	t.Setenv("TELESRV_ACCOUNT_FREEZE_BADGE_ICON_DOCUMENT_ID", "8800001")
+	t.Setenv("TELESRV_ACCOUNT_FREEZE_BADGE_BOT_USER_ID", "1250000099")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AccountFreezeBadgeIconDocumentID != 8800001 || cfg.AccountFreezeBadgeBotUserID != 1250000099 {
+		t.Fatalf("freeze badge = %d/%d", cfg.AccountFreezeBadgeIconDocumentID, cfg.AccountFreezeBadgeBotUserID)
+	}
+
+	disableDefaultConfigFile(t)
+	t.Setenv("TELESRV_ACCOUNT_FREEZE_BADGE_ICON_DOCUMENT_ID", "8800001")
+	t.Setenv("TELESRV_ACCOUNT_FREEZE_BADGE_BOT_USER_ID", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load accepted a freeze badge without an attributing bot")
+	}
 }
 
 func TestLoadBotVerificationOverrides(t *testing.T) {
@@ -1253,6 +1276,7 @@ func TestLoadRejectsInvalidBotVerificationConfig(t *testing.T) {
 		{"TELESRV_BOT_VERIFICATION_MAX_PER_VERIFIER", "10001"},
 		{"TELESRV_BOT_VERIFICATION_REQUEST_RATE_LIMIT", "-1"},
 		{"TELESRV_BOT_VERIFICATION_REQUEST_RATE_WINDOW", "-5m"},
+		{"TELESRV_ACCOUNT_FREEZE_BADGE_ICON_DOCUMENT_ID", "-1"},
 		// A positive limit with no window is a limiter that never refills.
 		{"TELESRV_BOT_VERIFICATION_REQUEST_RATE_WINDOW", "0s"},
 	} {

@@ -4,9 +4,11 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iamxvbaba/td/clock"
 	"github.com/iamxvbaba/td/tg"
+	"github.com/iamxvbaba/td/tgerr"
 	"go.uber.org/zap/zaptest"
 
 	accountapp "telesrv/internal/app/account"
@@ -23,9 +25,10 @@ func TestQuickReplyRPCSaveListAndDeleteMessage(t *testing.T) {
 	r.deps.BotVerifications = verify
 	userStore := memory.NewUserStore()
 	self, err := userStore.Create(context.Background(), domain.User{
-		AccessHash: 7000001,
-		Phone:      "15550007001",
-		FirstName:  "Quick",
+		AccessHash:   7000001,
+		Phone:        "15550007001",
+		FirstName:    "Quick",
+		PremiumUntil: int(time.Now().Add(time.Hour).Unix()),
 	})
 	if err != nil || self.ID != userID {
 		t.Fatalf("create quick-reply user = %+v err %v, want id %d", self, err, userID)
@@ -123,6 +126,246 @@ func TestQuickReplyRPCSaveListAndDeleteMessage(t *testing.T) {
 	if !sawDelete {
 		t.Fatalf("delete updates = %#v, want updateDeleteQuickReplyMessages", deleteUpdates.Updates)
 	}
+
+	// A shortcut with no remaining messages has no valid top_message and must
+	// not be returned: Telegram Desktop treats top_message=0 as a fatal server
+	// contract violation while loading shortcuts.
+	empty, err := r.onMessagesGetQuickReplies(ctx, 0)
+	if err != nil {
+		t.Fatalf("get quick replies after deleting final message: %v", err)
+	}
+	emptyReplies, ok := empty.(*tg.MessagesQuickReplies)
+	if !ok || len(emptyReplies.QuickReplies) != 0 || len(emptyReplies.Messages) != 0 {
+		t.Fatalf("quick replies after deleting final message = %#v, want empty list", empty)
+	}
+}
+
+func TestQuickReplyConversionDropsInvalidTopMessage(t *testing.T) {
+	got := tgQuickReplies([]domain.QuickReply{
+		{ID: 1, Shortcut: "empty", TopMessage: 0, Count: 0},
+		{ID: 2, Shortcut: "valid", TopMessage: 7, Count: 1},
+	})
+	if len(got) != 1 || got[0].ShortcutID != 2 || got[0].TopMessage != 7 {
+		t.Fatalf("tgQuickReplies = %+v, want only valid shortcut", got)
+	}
+}
+
+func TestQuickReplyRPCAddsMessageUsingExistingShortcutID(t *testing.T) {
+	const userID int64 = domain.UserIDSequenceBase
+	ctx := WithSessionID(WithAuthKeyID(WithUserID(context.Background(), userID), [8]byte{1}), 77)
+	r, updates := newChatAutomationTestRouter(t)
+	userStore := memory.NewUserStore()
+	self, err := userStore.Create(context.Background(), domain.User{
+		AccessHash:   7000002,
+		Phone:        "15550007002",
+		FirstName:    "Quick ID",
+		PremiumUntil: int(time.Now().Add(time.Hour).Unix()),
+	})
+	if err != nil || self.ID != userID {
+		t.Fatalf("create quick-reply user = %+v err %v, want id %d", self, err, userID)
+	}
+	r.deps.Users = appusers.NewService(userStore)
+
+	first, err := r.onMessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
+		Peer:               &tg.InputPeerSelf{},
+		Message:            "First template",
+		RandomID:           71001,
+		QuickReplyShortcut: &tg.InputQuickReplyShortcut{Shortcut: "greeting"},
+	})
+	if err != nil {
+		t.Fatalf("create quick reply: %v", err)
+	}
+	var shortcutID int
+	for _, update := range first.(*tg.Updates).Updates {
+		if created, ok := update.(*tg.UpdateNewQuickReply); ok {
+			shortcutID = created.QuickReply.ShortcutID
+		}
+	}
+	if shortcutID == 0 {
+		t.Fatalf("create updates = %#v, want shortcut id", first)
+	}
+
+	second, err := r.onMessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
+		Peer:               &tg.InputPeerSelf{},
+		Message:            "Second template",
+		RandomID:           71002,
+		QuickReplyShortcut: &tg.InputQuickReplyShortcutID{ShortcutID: shortcutID},
+	})
+	if err != nil {
+		t.Fatalf("append quick reply by id: %v", err)
+	}
+	var sawMessage bool
+	for _, update := range second.(*tg.Updates).Updates {
+		if saved, ok := update.(*tg.UpdateQuickReplyMessage); ok {
+			message, ok := saved.Message.(*tg.Message)
+			if !ok || message.QuickReplyShortcutID != shortcutID {
+				t.Fatalf("quick reply message = %#v", saved.Message)
+			}
+			sawMessage = true
+		}
+	}
+	if !sawMessage {
+		t.Fatalf("append updates = %#v, want updateQuickReplyMessage", second)
+	}
+	if len(updates.events) != 2 || updates.events[1].Type != domain.UpdateEventQuickReplyMessage {
+		t.Fatalf("recorded events = %+v", updates.events)
+	}
+
+	messages, err := r.onMessagesGetQuickReplyMessages(ctx, &tg.MessagesGetQuickReplyMessagesRequest{ShortcutID: shortcutID})
+	if err != nil {
+		t.Fatalf("get quick reply messages: %v", err)
+	}
+	if got := messages.(*tg.MessagesMessages); len(got.Messages) != 2 {
+		t.Fatalf("messages = %#v, want two templates", got.Messages)
+	}
+
+	_, err = r.onMessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
+		Peer:               &tg.InputPeerSelf{},
+		Message:            "Missing shortcut",
+		RandomID:           71003,
+		QuickReplyShortcut: &tg.InputQuickReplyShortcutID{ShortcutID: shortcutID + 1000},
+	})
+	if !tgerr.Is(err, "SHORTCUT_INVALID") {
+		t.Fatalf("missing shortcut err = %v, want SHORTCUT_INVALID", err)
+	}
+}
+
+func TestBusinessGreetingAndAwayAcceptIOSDefaultRecipients(t *testing.T) {
+	const userID int64 = domain.UserIDSequenceBase
+	ctx := WithSessionID(WithAuthKeyID(WithUserID(context.Background(), userID), [8]byte{2}), 78)
+	r, _ := newChatAutomationTestRouter(t)
+	userStore := memory.NewUserStore()
+	self, err := userStore.Create(context.Background(), domain.User{
+		AccessHash:   7000003,
+		Phone:        "15550007003",
+		FirstName:    "Business",
+		PremiumUntil: int(time.Now().Add(time.Hour).Unix()),
+	})
+	if err != nil || self.ID != userID {
+		t.Fatalf("create business user = %+v err %v, want id %d", self, err, userID)
+	}
+	r.deps.Users = appusers.NewService(userStore)
+
+	created, err := r.onMessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
+		Peer:               &tg.InputPeerSelf{},
+		Message:            "Automatic reply",
+		RandomID:           72001,
+		QuickReplyShortcut: &tg.InputQuickReplyShortcut{Shortcut: "automatic"},
+	})
+	if err != nil {
+		t.Fatalf("create automatic reply: %v", err)
+	}
+	var shortcutID int
+	for _, update := range created.(*tg.Updates).Updates {
+		if value, ok := update.(*tg.UpdateNewQuickReply); ok {
+			shortcutID = value.QuickReply.ShortcutID
+		}
+	}
+	if shortcutID == 0 {
+		t.Fatalf("create updates = %#v, want shortcut id", created)
+	}
+
+	greetingReq := &tg.AccountUpdateBusinessGreetingMessageRequest{}
+	greetingReq.SetMessage(tg.InputBusinessGreetingMessage{
+		ShortcutID:     shortcutID,
+		Recipients:     tg.InputBusinessRecipients{ExcludeSelected: true},
+		NoActivityDays: 7,
+	})
+	if ok, err := r.onAccountUpdateBusinessGreetingMessage(ctx, greetingReq); err != nil || !ok {
+		t.Fatalf("update greeting = %v, %v", ok, err)
+	}
+
+	awayReq := &tg.AccountUpdateBusinessAwayMessageRequest{}
+	awayReq.SetMessage(tg.InputBusinessAwayMessage{
+		ShortcutID: shortcutID,
+		Schedule:   &tg.BusinessAwayMessageScheduleAlways{},
+		Recipients: tg.InputBusinessRecipients{ExcludeSelected: true},
+	})
+	if ok, err := r.onAccountUpdateBusinessAwayMessage(ctx, awayReq); err != nil || !ok {
+		t.Fatalf("update away = %v, %v", ok, err)
+	}
+
+	profile, found, err := r.deps.Account.(AccountBusinessAutomationService).GetBusinessProfile(ctx, userID)
+	if err != nil || !found {
+		t.Fatalf("get business profile found=%v err=%v", found, err)
+	}
+	if profile.Greeting == nil || profile.Greeting.ShortcutID != shortcutID || !profile.Greeting.Recipients.ExcludeSelected {
+		t.Fatalf("greeting = %+v", profile.Greeting)
+	}
+	if profile.Away == nil || profile.Away.ShortcutID != shortcutID || !profile.Away.Recipients.ExcludeSelected {
+		t.Fatalf("away = %+v", profile.Away)
+	}
+
+	missingReq := &tg.AccountUpdateBusinessGreetingMessageRequest{}
+	missingReq.SetMessage(tg.InputBusinessGreetingMessage{
+		ShortcutID:     shortcutID + 1000,
+		Recipients:     tg.InputBusinessRecipients{ExcludeSelected: true},
+		NoActivityDays: 7,
+	})
+	if _, err := r.onAccountUpdateBusinessGreetingMessage(ctx, missingReq); !tgerr.Is(err, "SHORTCUT_INVALID") {
+		t.Fatalf("missing greeting shortcut err = %v, want SHORTCUT_INVALID", err)
+	}
+}
+
+func TestQuickReplyMediaSaveAndEdit(t *testing.T) {
+	const userID int64 = domain.UserIDSequenceBase
+	ctx := WithUserID(context.Background(), userID)
+	r, _ := newChatAutomationTestRouter(t)
+	userStore := memory.NewUserStore()
+	self, err := userStore.Create(context.Background(), domain.User{
+		AccessHash:   7000011,
+		Phone:        "15550007011",
+		FirstName:    "Media",
+		PremiumUntil: int(time.Now().Add(time.Hour).Unix()),
+	})
+	if err != nil || self.ID != userID {
+		t.Fatalf("create media quick-reply user = %+v err=%v", self, err)
+	}
+	r.deps.Users = appusers.NewService(userStore)
+
+	updates, err := r.onMessagesSendMedia(ctx, &tg.MessagesSendMediaRequest{
+		Peer:               &tg.InputPeerSelf{},
+		Media:              &tg.InputMediaContact{PhoneNumber: "+15550100", FirstName: "Support"},
+		Message:            "Call us",
+		RandomID:           81001,
+		QuickReplyShortcut: &tg.InputQuickReplyShortcut{Shortcut: "contact"},
+	})
+	if err != nil {
+		t.Fatalf("save media quick reply: %v", err)
+	}
+	result := updates.(*tg.Updates)
+	var messageID, shortcutID int
+	for _, update := range result.Updates {
+		switch value := update.(type) {
+		case *tg.UpdateMessageID:
+			messageID = value.ID
+		case *tg.UpdateNewQuickReply:
+			shortcutID = value.QuickReply.ShortcutID
+		}
+	}
+	if messageID == 0 || shortcutID == 0 {
+		t.Fatalf("save media updates = %#v", result.Updates)
+	}
+
+	edit := &tg.MessagesEditMessageRequest{Peer: &tg.InputPeerSelf{}, ID: messageID}
+	edit.SetQuickReplyShortcutID(shortcutID)
+	edit.SetMessage("Updated contact")
+	if _, err := r.onMessagesEditMessage(ctx, edit); err != nil {
+		t.Fatalf("edit media quick reply: %v", err)
+	}
+	messages, err := r.onMessagesGetQuickReplyMessages(ctx, &tg.MessagesGetQuickReplyMessagesRequest{ShortcutID: shortcutID})
+	if err != nil {
+		t.Fatalf("get media quick reply: %v", err)
+	}
+	envelope := messages.(*tg.MessagesMessages)
+	message := envelope.Messages[0].(*tg.Message)
+	if message.Message != "Updated contact" {
+		t.Fatalf("edited quick reply body = %q", message.Message)
+	}
+	media, ok := message.Media.(*tg.MessageMediaContact)
+	if !ok || media.PhoneNumber != "+15550100" {
+		t.Fatalf("edited quick reply media = %#v", message.Media)
+	}
 }
 
 func TestBusinessChatLinkRPCs(t *testing.T) {
@@ -130,7 +373,13 @@ func TestBusinessChatLinkRPCs(t *testing.T) {
 	ctx := WithUserID(context.Background(), userID)
 	r, _ := newChatAutomationTestRouter(t)
 	r.deps.Users = mapUsersService{users: map[int64]domain.User{
-		userID: {ID: userID, AccessHash: 2002, FirstName: "Business", Username: "business_slot"},
+		userID: {
+			ID:           userID,
+			AccessHash:   2002,
+			FirstName:    "Business",
+			Username:     "business_slot",
+			PremiumUntil: int(time.Now().Add(time.Hour).Unix()),
+		},
 	}}
 	registry := newFakeUsernameRegistry()
 	registry.byPeer[domain.Peer{Type: domain.PeerTypeUser, ID: userID}] = []domain.Username{
@@ -217,6 +466,25 @@ func TestConnectedBusinessBotRPCFlow(t *testing.T) {
 	botUser, ok := connected.Users[0].(*tg.User)
 	if !ok || !botUser.Bot || !botUser.BotBusiness {
 		t.Fatalf("connected bot user = %#v, want bot_business", connected.Users[0])
+	}
+	connection, found, err := store.GetConnectedBusinessBot(context.Background(), ownerID)
+	if err != nil || !found || connection.ConnectionID == "" {
+		t.Fatalf("stored business connection = %+v found=%v err=%v", connection, found, err)
+	}
+	botConnection, err := r.onAccountGetBotBusinessConnection(WithUserID(context.Background(), botID), connection.ConnectionID)
+	if err != nil {
+		t.Fatalf("onAccountGetBotBusinessConnection: %v", err)
+	}
+	connectionUpdates, ok := botConnection.(*tg.Updates)
+	if !ok || len(connectionUpdates.Updates) != 1 {
+		t.Fatalf("bot business connection = %#v", botConnection)
+	}
+	connectUpdate, ok := connectionUpdates.Updates[0].(*tg.UpdateBotBusinessConnect)
+	if !ok || connectUpdate.Connection.ConnectionID != connection.ConnectionID || connectUpdate.Connection.UserID != ownerID {
+		t.Fatalf("bot business update = %#v", connectionUpdates.Updates[0])
+	}
+	if _, err := r.onAccountGetBotBusinessConnection(WithUserID(context.Background(), peerID), connection.ConnectionID); !tgerr.Is(err, "BUSINESS_CONNECTION_NOT_ALLOWED") {
+		t.Fatalf("user business connection lookup err=%v, want BUSINESS_CONNECTION_NOT_ALLOWED", err)
 	}
 
 	peerSettings, err := r.onMessagesGetPeerSettings(ctx, &tg.InputPeerUser{UserID: peerID, AccessHash: 102})

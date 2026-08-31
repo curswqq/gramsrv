@@ -509,6 +509,9 @@ func (r *Router) onMessagesToggleDialogFilterTags(ctx context.Context, enabled b
 	if err != nil {
 		return false, internalErr()
 	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return false, err
+	}
 	if r.deps.Dialogs != nil {
 		if err := r.deps.Dialogs.ToggleDialogFolderTags(ctx, userID, enabled); err != nil {
 			return false, internalErr()

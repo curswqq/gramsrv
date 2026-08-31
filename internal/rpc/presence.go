@@ -502,6 +502,13 @@ func (r *Router) sweepExpiredPresence(ctx context.Context) {
 		if !ok {
 			status = domain.UserStatus{Kind: domain.UserStatusOffline, WasOnline: now}
 		}
+		// Mobile backgrounding and half-open connections may expire without the
+		// transport close hook. Persist the same last activity used by the TTL
+		// sweep, otherwise a later reload can regress to stale users.last_seen_at.
+		if status.WasOnline <= 0 || status.WasOnline > now {
+			status.WasOnline = now
+		}
+		r.persistLastSeen(ctx, userID, status.WasOnline, false)
 		pushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		r.pushUserStatus(pushCtx, userID, status)
 		cancel()

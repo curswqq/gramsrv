@@ -476,41 +476,45 @@ type Dependencies struct {
 	// BotVerification is the third-party mechanism, wired separately from
 	// Verification: the two never read each other's state.
 	BotVerification BotVerificationService
-	Now             func() time.Time
+	// AccountFreezeBadgeIconDocumentID is a real custom emoji document used by
+	// official clients to render the public snowflake on frozen accounts.
+	AccountFreezeBadgeIconDocumentID int64
+	Now                              func() time.Time
 }
 
 type Service struct {
-	commands               CommandRepository
-	restrictions           RestrictionStore
-	auth                   AuthService
-	revoker                AuthKeyRevoker
-	users                  UsersService
-	account                AccountService
-	photos                 AvatarResolver
-	stars                  StarsService
-	premium                PremiumService
-	starsNotifier          StarsNotifier
-	userNotifier           UserNotifier
-	userModerationNotifier UserModerationNotifier
-	freezeNotifier         AccountFreezeNotifier
-	channels               ChannelsService
-	channelNotifier        ChannelNotifier
-	messages               MessagesService
-	gifts                  GiftsService
-	giftGranter            GiftGranter
-	officialGifts          OfficialGiftsSource
-	bots                   BotService
-	broadcast              BroadcastService
-	emoji                  EmojiService
-	stickerSets            StickerSetsService
-	gifCatalog             GifCatalogService
-	moderation             ModerationService
-	usernames              CollectibleUsernamesService
-	collectiblePhones      CollectiblePhonesService
-	rating                 AccountRatingService
-	verification           VerificationService
-	botVerification        BotVerificationService
-	now                    func() time.Time
+	commands                         CommandRepository
+	restrictions                     RestrictionStore
+	auth                             AuthService
+	revoker                          AuthKeyRevoker
+	users                            UsersService
+	account                          AccountService
+	photos                           AvatarResolver
+	stars                            StarsService
+	premium                          PremiumService
+	starsNotifier                    StarsNotifier
+	userNotifier                     UserNotifier
+	userModerationNotifier           UserModerationNotifier
+	freezeNotifier                   AccountFreezeNotifier
+	channels                         ChannelsService
+	channelNotifier                  ChannelNotifier
+	messages                         MessagesService
+	gifts                            GiftsService
+	giftGranter                      GiftGranter
+	officialGifts                    OfficialGiftsSource
+	bots                             BotService
+	broadcast                        BroadcastService
+	emoji                            EmojiService
+	stickerSets                      StickerSetsService
+	gifCatalog                       GifCatalogService
+	moderation                       ModerationService
+	usernames                        CollectibleUsernamesService
+	collectiblePhones                CollectiblePhonesService
+	rating                           AccountRatingService
+	verification                     VerificationService
+	botVerification                  BotVerificationService
+	accountFreezeBadgeIconDocumentID int64
+	now                              func() time.Time
 }
 
 func NewService(deps Dependencies) *Service {
@@ -524,6 +528,9 @@ func (s *Service) Configure(deps Dependencies) *Service {
 	}
 	if deps.Restrictions != nil {
 		s.restrictions = deps.Restrictions
+	}
+	if deps.AccountFreezeBadgeIconDocumentID >= 0 {
+		s.accountFreezeBadgeIconDocumentID = deps.AccountFreezeBadgeIconDocumentID
 	}
 	if deps.Auth != nil {
 		s.auth = deps.Auth
@@ -1304,7 +1311,7 @@ func (s *Service) AccountFreeze(ctx context.Context, userID int64) (domain.Accou
 	if err := validateAccountFreeze(freeze); err != nil {
 		return domain.AccountFreeze{}, false, fmt.Errorf("invalid durable account freeze for user %d: %w", userID, err)
 	}
-	return freeze, true, nil
+	return s.decorateAccountFreeze(freeze), true, nil
 }
 
 // AccountFreezes is the bounded-query projection API used by user hydration.
@@ -1329,7 +1336,7 @@ func (s *Service) AccountFreezes(ctx context.Context, userIDs []int64) (map[int6
 					return nil, fmt.Errorf("invalid durable account freeze for user %d: %w", id, err)
 				}
 				if freeze.Frozen {
-					out[id] = freeze
+					out[id] = s.decorateAccountFreeze(freeze)
 				}
 			}
 		}
@@ -1345,6 +1352,13 @@ func (s *Service) AccountFreezes(ctx context.Context, userIDs []int64) (map[int6
 		}
 	}
 	return out, nil
+}
+
+func (s *Service) decorateAccountFreeze(freeze domain.AccountFreeze) domain.AccountFreeze {
+	if freeze.Frozen {
+		freeze.BadgeIconDocumentID = s.accountFreezeBadgeIconDocumentID
+	}
+	return freeze
 }
 
 func uniqueFreezeUserIDs(userIDs []int64) []int64 {

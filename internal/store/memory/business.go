@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"hash/fnv"
 	"sort"
 	"strings"
@@ -133,7 +134,7 @@ func (s *PasswordStore) SaveQuickReplyText(_ context.Context, ownerUserID int64,
 	if err != nil {
 		return domain.QuickReplyMutation{}, err
 	}
-	if msg.Message == "" || len(msg.Entities) > domain.MaxMessageEntityCount {
+	if (msg.Message == "" && msg.Media.IsZero()) || len(msg.Entities) > domain.MaxMessageEntityCount {
 		return domain.QuickReplyMutation{}, domain.ErrShortcutInvalid
 	}
 	s.mu.Lock()
@@ -166,6 +167,7 @@ func (s *PasswordStore) SaveQuickReplyText(_ context.Context, ownerUserID int64,
 	msg.ID = s.nextQuickReplyMessageID[ownerUserID] + 1
 	s.nextQuickReplyMessageID[ownerUserID] = msg.ID
 	msg.Entities = append([]domain.MessageEntity(nil), msg.Entities...)
+	msg.Media = cloneRequestedPeerMedia(msg.Media)
 	s.quickReplyMessages[ownerUserID][replyID][msg.ID] = msg
 	s.refreshQuickReplyLocked(ownerUserID, replyID)
 	reply := cloneQuickReply(s.quickReplies[ownerUserID][replyID])
@@ -178,6 +180,39 @@ func (s *PasswordStore) SaveQuickReplyText(_ context.Context, ownerUserID int64,
 		List:       s.quickReplyListLocked(ownerUserID, true),
 		QuickReply: reply,
 		ShortcutID: replyID,
+		Message:    cloneQuickReplyMessage(msg),
+	}, nil
+}
+
+func (s *PasswordStore) ReplaceQuickReplyMessage(_ context.Context, ownerUserID int64, shortcutID, messageID int, msg domain.QuickReplyMessage) (domain.QuickReplyMutation, error) {
+	if (msg.Message == "" && msg.Media.IsZero()) || len(msg.Entities) > domain.MaxMessageEntityCount {
+		return domain.QuickReplyMutation{}, domain.ErrShortcutInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.quickReplies[ownerUserID][shortcutID]; !ok {
+		return domain.QuickReplyMutation{}, domain.ErrShortcutInvalid
+	}
+	previous, ok := s.quickReplyMessages[ownerUserID][shortcutID][messageID]
+	if !ok {
+		return domain.QuickReplyMutation{}, domain.ErrShortcutInvalid
+	}
+	msg.OwnerUserID = ownerUserID
+	msg.ShortcutID = shortcutID
+	msg.ID = messageID
+	msg.RandomID = previous.RandomID
+	if msg.Date == 0 {
+		msg.Date = previous.Date
+	}
+	msg.Entities = append([]domain.MessageEntity(nil), msg.Entities...)
+	msg.Media = cloneRequestedPeerMedia(msg.Media)
+	s.quickReplyMessages[ownerUserID][shortcutID][messageID] = msg
+	s.refreshQuickReplyLocked(ownerUserID, shortcutID)
+	return domain.QuickReplyMutation{
+		Kind:       domain.QuickReplyMutationMessage,
+		List:       s.quickReplyListLocked(ownerUserID, true),
+		QuickReply: cloneQuickReply(s.quickReplies[ownerUserID][shortcutID]),
+		ShortcutID: shortcutID,
 		Message:    cloneQuickReplyMessage(msg),
 	}, nil
 }
@@ -346,8 +381,23 @@ func (s *PasswordStore) GetConnectedBusinessBot(_ context.Context, ownerUserID i
 	return cloneConnectedBusinessBot(bot), ok, nil
 }
 
+func (s *PasswordStore) GetConnectedBusinessBotByConnectionID(_ context.Context, connectionID string) (domain.ConnectedBusinessBot, bool, error) {
+	connectionID = strings.TrimSpace(connectionID)
+	if connectionID == "" {
+		return domain.ConnectedBusinessBot{}, false, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, bot := range s.connectedBusinessBots {
+		if bot.ConnectionID == connectionID {
+			return cloneConnectedBusinessBot(bot), true, nil
+		}
+	}
+	return domain.ConnectedBusinessBot{}, false, nil
+}
+
 func (s *PasswordStore) SaveConnectedBusinessBot(_ context.Context, bot domain.ConnectedBusinessBot) (domain.ConnectedBusinessBot, error) {
-	if bot.OwnerUserID == 0 || bot.BotUserID == 0 {
+	if bot.OwnerUserID == 0 || bot.BotUserID == 0 || strings.TrimSpace(bot.ConnectionID) == "" {
 		return domain.ConnectedBusinessBot{}, domain.ErrBotBusinessMissing
 	}
 	s.mu.Lock()
@@ -448,7 +498,11 @@ func (s *PasswordStore) quickReplyListLocked(ownerUserID int64, includeTopMessag
 	replies := make([]domain.QuickReply, 0, len(s.quickReplies[ownerUserID]))
 	for id := range s.quickReplies[ownerUserID] {
 		s.refreshQuickReplyLocked(ownerUserID, id)
-		replies = append(replies, cloneQuickReply(s.quickReplies[ownerUserID][id]))
+		reply := s.quickReplies[ownerUserID][id]
+		if reply.ID <= 0 || reply.TopMessage <= 0 || reply.Count <= 0 {
+			continue
+		}
+		replies = append(replies, cloneQuickReply(reply))
 	}
 	sortQuickReplies(replies)
 	messages := make([]domain.QuickReplyMessage, 0, len(replies))
@@ -519,6 +573,9 @@ func quickReplyMessagesHash(items []domain.QuickReplyMessage) int64 {
 		writeHashInt(h, item.ID)
 		writeHashString(h, item.Message)
 		writeHashInt(h, item.Date)
+		if media, err := json.Marshal(item.Media); err == nil {
+			_, _ = h.Write(media)
+		}
 	}
 	return int64(h.Sum64() & 0x7fffffffffffffff)
 }
@@ -582,6 +639,7 @@ func cloneQuickReply(in domain.QuickReply) domain.QuickReply {
 func cloneQuickReplyMessage(in domain.QuickReplyMessage) domain.QuickReplyMessage {
 	out := in
 	out.Entities = append([]domain.MessageEntity(nil), in.Entities...)
+	out.Media = cloneRequestedPeerMedia(in.Media)
 	return out
 }
 

@@ -37,8 +37,9 @@ func TestOnPaymentsGetStarsStatusGranted(t *testing.T) {
 		t.Fatalf("chats/users must be non-nil vectors, got chats=%v users=%v", status.Chats, status.Users)
 	}
 	// 余额是 flag 外必填字段，不能省略。
-	if _, hasHistory := status.GetHistory(); hasHistory {
-		t.Fatalf("status (not transactions) should carry no history")
+	history, hasHistory := status.GetHistory()
+	if !hasHistory || len(history) != 1 {
+		t.Fatalf("initial status history = %d ok=%v, want the first ledger page", len(history), hasHistory)
 	}
 }
 

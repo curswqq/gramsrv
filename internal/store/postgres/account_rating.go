@@ -189,6 +189,11 @@ RETURNING `+accountRatingColumns,
 //	                        ledger is the single authoritative record of Stars
 //	                        movement for a user, and stars_transactions_user_id_idx
 //	                        (user_id, id DESC) bounds the scan to the user's rows.
+//	                        Gift offers are escrow, not spending: their debit is
+//	                        counted only after star_gift_offers reaches accepted,
+//	                        while a refund credit never becomes received Stars.
+//	                        This prevents a declined/expired/cancelled high offer
+//	                        from contributing both its reservation and its refund.
 //	gifts received          peer_star_gifts for the user peer, restricted to
 //	                        lifecycle_status = 'active' -- the weight rewards gifts
 //	                        actually held, not ones converted, burned or exported
@@ -229,8 +234,18 @@ func (s *AccountRatingStore) AccountRatingSignals(ctx context.Context, userID in
 	signals := domain.AccountRatingSignals{UserID: userID}
 	err := s.db.QueryRow(ctx, `
 SELECT
-  COALESCE((SELECT sum(amount) FROM stars_transactions WHERE user_id = u.id AND amount > 0), 0),
-  COALESCE((SELECT -sum(amount) FROM stars_transactions WHERE user_id = u.id AND amount < 0), 0),
+  COALESCE((
+    SELECT sum(amount) FROM stars_transactions
+    WHERE user_id = u.id AND amount > 0
+      AND NOT (reason = 'gift_offer' AND title IN ('Gift offer refund', 'Expired gift offer refund'))
+  ), 0),
+  COALESCE((
+    SELECT -sum(amount) FROM stars_transactions
+    WHERE user_id = u.id AND amount < 0 AND reason <> 'gift_offer'
+  ), 0) + COALESCE((
+    SELECT sum(amount) FROM star_gift_offers
+    WHERE buyer_user_id = u.id AND currency = 'XTR' AND status = 'accepted'
+  ), 0),
   COALESCE((
     SELECT count(DISTINCT private_message_id) FROM message_boxes
     WHERE message_sender_id = u.id AND NOT deleted

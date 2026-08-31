@@ -40,6 +40,9 @@ func (r *Router) onMessagesCheckQuickReplyShortcut(ctx context.Context, shortcut
 	if err != nil {
 		return false, internalErr()
 	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return false, err
+	}
 	svc, ok := r.accountBusinessAutomation()
 	if !ok {
 		return false, premiumAccountRequiredErr()
@@ -55,6 +58,9 @@ func (r *Router) onMessagesReorderQuickReplies(ctx context.Context, order []int)
 	userID, _, err := r.currentUserID(ctx)
 	if err != nil {
 		return false, internalErr()
+	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return false, err
 	}
 	svc, ok := r.accountBusinessAutomation()
 	if !ok {
@@ -74,6 +80,9 @@ func (r *Router) onMessagesEditQuickReplyShortcut(ctx context.Context, req *tg.M
 	userID, _, err := r.currentUserID(ctx)
 	if err != nil {
 		return false, internalErr()
+	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return false, err
 	}
 	if req == nil || req.ShortcutID <= 0 {
 		return false, shortcutInvalidErr()
@@ -96,6 +105,9 @@ func (r *Router) onMessagesDeleteQuickReplyShortcut(ctx context.Context, shortcu
 	userID, _, err := r.currentUserID(ctx)
 	if err != nil {
 		return false, internalErr()
+	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return false, err
 	}
 	if shortcutID <= 0 {
 		return false, shortcutInvalidErr()
@@ -158,6 +170,9 @@ func (r *Router) onMessagesSendQuickReplyMessages(ctx context.Context, req *tg.M
 	if err != nil {
 		return nil, internalErr()
 	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return nil, err
+	}
 	if req == nil || req.ShortcutID <= 0 || len(req.ID) > domain.MaxQuickReplyMessages || len(req.RandomID) > domain.MaxQuickReplyMessages {
 		return nil, shortcutInvalidErr()
 	}
@@ -194,44 +209,29 @@ func (r *Router) onMessagesSendQuickReplyMessages(ctx context.Context, req *tg.M
 	if err := r.checkSendRateLimit(ctx, userID, len(list.Messages)); err != nil {
 		return nil, err
 	}
-	recipientBlocked, err := r.peerBlocksUser(ctx, userID, peer.ID)
-	if err != nil {
-		return nil, err
-	}
-	sessionID, _ := SessionIDFrom(ctx)
-	res := domain.ForwardPrivateMessagesResult{OwnerUserID: userID}
-	now := int(r.clock.Now().Unix())
+	results := make([]tg.UpdatesClass, 0, len(list.Messages))
 	for i, template := range list.Messages {
-		sent, err := r.deps.Messages.SendPrivateText(ctx, userID, domain.SendPrivateTextRequest{
-			SenderUserID:     userID,
-			RecipientUserID:  peer.ID,
-			RandomID:         randomIDs[i],
-			Message:          template.Message,
-			Entities:         append([]domain.MessageEntity(nil), template.Entities...),
-			Date:             now,
-			OriginAuthKeyID:  rawAuthKeyIDForOrigin(ctx),
-			OriginSessionID:  sessionID,
-			RecipientBlocked: recipientBlocked,
+		updates, _, err := r.sendOutgoing(ctx, userID, peer, outgoingSend{
+			randomID: randomIDs[i],
+			message:  template.Message,
+			entities: tgMessageEntities(template.Entities),
+			media:    template.Media,
 		})
 		if err != nil {
-			return nil, messageSendErr(err)
+			return nil, err
 		}
-		if !sent.Duplicate {
-			r.enqueueBotAPIPrivateMessageUpdateAsync(ctx, sent)
-		}
-		res.SenderMessages = append(res.SenderMessages, sent.SenderMessage)
-		res.RecipientMessages = append(res.RecipientMessages, sent.RecipientMessage)
-		res.SenderEvents = append(res.SenderEvents, sent.SenderEvent)
-		res.RecipientEvents = append(res.RecipientEvents, sent.RecipientEvent)
-		res.Duplicates = append(res.Duplicates, sent.Duplicate)
+		results = append(results, updates)
 	}
-	return tgForwardMessagesUpdates(res, randomIDs, r.usersForMessageUpdates(ctx, userID, res.SenderMessages), r.chatsForMessageUpdates(ctx, userID, res.SenderMessages)), nil
+	return combineSendUpdates(results), nil
 }
 
 func (r *Router) onMessagesDeleteQuickReplyMessages(ctx context.Context, req *tg.MessagesDeleteQuickReplyMessagesRequest) (tg.UpdatesClass, error) {
 	userID, _, err := r.currentUserID(ctx)
 	if err != nil {
 		return nil, internalErr()
+	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return nil, err
 	}
 	if req == nil || req.ShortcutID <= 0 || len(req.ID) == 0 || len(req.ID) > domain.MaxQuickReplyMessages {
 		return nil, shortcutInvalidErr()
@@ -252,7 +252,14 @@ func (r *Router) onMessagesSaveQuickReplyText(ctx context.Context, req *tg.Messa
 	if err != nil {
 		return nil, internalErr()
 	}
-	shortcut, err := quickReplyShortcutName(req.QuickReplyShortcut)
+	svc, ok := r.accountBusinessAutomation()
+	if !ok {
+		return nil, shortcutInvalidErr()
+	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return nil, err
+	}
+	shortcut, err := r.resolveQuickReplyShortcut(ctx, userID, svc, req.QuickReplyShortcut)
 	if err != nil {
 		return nil, err
 	}
@@ -262,10 +269,6 @@ func (r *Router) onMessagesSaveQuickReplyText(ctx context.Context, req *tg.Messa
 	}
 	if peer.Type != domain.PeerTypeUser || peer.ID != userID {
 		return nil, shortcutInvalidErr()
-	}
-	svc, ok := r.accountBusinessAutomation()
-	if !ok {
-		return nil, premiumAccountRequiredErr()
 	}
 	mutation, err := svc.SaveQuickReplyText(ctx, userID, shortcut, domain.QuickReplyMessage{
 		RandomID: req.RandomID,
@@ -282,10 +285,134 @@ func (r *Router) onMessagesSaveQuickReplyText(ctx context.Context, req *tg.Messa
 	})
 }
 
-func quickReplyShortcutName(input tg.InputQuickReplyShortcutClass) (string, error) {
+func (r *Router) onMessagesSaveQuickReplyMedia(ctx context.Context, req *tg.MessagesSendMediaRequest) (tg.UpdatesClass, error) {
+	userID, _, err := r.currentUserID(ctx)
+	if err != nil {
+		return nil, internalErr()
+	}
+	svc, ok := r.accountBusinessAutomation()
+	if !ok {
+		return nil, shortcutInvalidErr()
+	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return nil, err
+	}
+	shortcut, err := r.resolveQuickReplyShortcut(ctx, userID, svc, req.QuickReplyShortcut)
+	if err != nil {
+		return nil, err
+	}
+	peer, err := r.checkedDomainPeerFromInputPeer(ctx, userID, req.Peer)
+	if err != nil {
+		return nil, err
+	}
+	if peer.Type != domain.PeerTypeUser || peer.ID != userID {
+		return nil, shortcutInvalidErr()
+	}
+	media, err := r.resolveInputMedia(ctx, userID, req.Media)
+	if err != nil {
+		return nil, err
+	}
+	if media.IsZero() {
+		return nil, mediaInvalidErr()
+	}
+	mutation, err := svc.SaveQuickReplyText(ctx, userID, shortcut, domain.QuickReplyMessage{
+		RandomID: req.RandomID,
+		Date:     int(r.clock.Now().Unix()),
+		Message:  req.Message,
+		Entities: domainMessageEntitiesForViewer(userID, r.augmentAutoEntities(req.Message, req.Entities)),
+		Media:    media,
+	})
+	if err != nil {
+		return nil, businessAutomationErr(err)
+	}
+	return r.quickReplyMutationUpdates(ctx, userID, mutation, []tg.UpdateClass{
+		&tg.UpdateMessageID{ID: mutation.Message.ID, RandomID: req.RandomID},
+	})
+}
+
+func (r *Router) onMessagesEditQuickReplyMessage(ctx context.Context, req *tg.MessagesEditMessageRequest) (tg.UpdatesClass, error) {
+	userID, _, err := r.currentUserID(ctx)
+	if err != nil {
+		return nil, internalErr()
+	}
+	shortcutID, ok := req.GetQuickReplyShortcutID()
+	if !ok || shortcutID <= 0 || req.ID <= 0 {
+		return nil, shortcutInvalidErr()
+	}
+	peer, err := r.checkedDomainPeerFromInputPeer(ctx, userID, req.Peer)
+	if err != nil {
+		return nil, err
+	}
+	if peer.Type != domain.PeerTypeUser || peer.ID != userID {
+		return nil, shortcutInvalidErr()
+	}
+	svc, ok := r.accountBusinessAutomation()
+	if !ok {
+		return nil, shortcutInvalidErr()
+	}
+	if err := r.requireBusinessPremium(ctx, userID); err != nil {
+		return nil, err
+	}
+	current, err := svc.GetQuickReplyMessages(ctx, userID, shortcutID, []int{req.ID})
+	if err != nil || len(current.Messages) != 1 {
+		return nil, shortcutInvalidErr()
+	}
+	message := current.Messages[0]
+	changed := false
+	if body, present := req.GetMessage(); present {
+		if len(req.Entities) > domain.MaxMessageEntityCount {
+			return nil, entitiesTooLongErr()
+		}
+		message.Message = body
+		message.Entities = domainMessageEntitiesForViewer(userID, r.augmentAutoEntities(body, req.Entities))
+		changed = true
+	}
+	if input, present := req.GetMedia(); present {
+		switch input.(type) {
+		case *tg.InputMediaEmpty:
+			message.Media = nil
+		default:
+			media, err := r.resolveInputMedia(ctx, userID, input)
+			if err != nil {
+				return nil, err
+			}
+			message.Media = media
+		}
+		changed = true
+	}
+	if !changed {
+		return nil, messageNotModifiedErr()
+	}
+	message.Date = int(r.clock.Now().Unix())
+	mutation, err := svc.ReplaceQuickReplyMessage(ctx, userID, shortcutID, req.ID, message)
+	if err != nil {
+		return nil, businessAutomationErr(err)
+	}
+	return r.quickReplyMutationUpdates(ctx, userID, mutation, nil)
+}
+
+func (r *Router) resolveQuickReplyShortcut(ctx context.Context, userID int64, svc AccountBusinessAutomationService, input tg.InputQuickReplyShortcutClass) (string, error) {
 	switch shortcut := input.(type) {
 	case *tg.InputQuickReplyShortcut:
-		return shortcut.Shortcut, nil
+		name, err := domain.NormalizeQuickReplyShortcut(shortcut.Shortcut)
+		if err != nil {
+			return "", shortcutInvalidErr()
+		}
+		return name, nil
+	case *tg.InputQuickReplyShortcutID:
+		if shortcut.ShortcutID <= 0 {
+			return "", shortcutInvalidErr()
+		}
+		list, err := svc.ListQuickReplies(ctx, userID)
+		if err != nil {
+			return "", businessAutomationErr(err)
+		}
+		for _, reply := range list.QuickReplies {
+			if reply.ID == shortcut.ShortcutID {
+				return reply.Shortcut, nil
+			}
+		}
+		return "", shortcutInvalidErr()
 	default:
 		return "", shortcutInvalidErr()
 	}

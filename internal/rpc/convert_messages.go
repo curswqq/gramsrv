@@ -484,7 +484,12 @@ func tgMessageReplyHeader(m domain.Message) tg.MessageReplyHeaderClass {
 	if m.ReplyTo.QuoteText != "" {
 		header.SetQuote(true)
 		header.SetQuoteText(m.ReplyTo.QuoteText)
-		header.SetQuoteEntities(tgMessageEntities(m.ReplyTo.QuoteEntities))
+		// quote_entities is optional. Setting its presence bit with a nil slice
+		// produces a non-canonical TL value and makes history/difference responses
+		// fail to encode for plain-text quotes.
+		if len(m.ReplyTo.QuoteEntities) > 0 {
+			header.SetQuoteEntities(tgMessageEntities(m.ReplyTo.QuoteEntities))
+		}
 		header.SetQuoteOffset(m.ReplyTo.QuoteOffset)
 	}
 	return header

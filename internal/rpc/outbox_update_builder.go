@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/iamxvbaba/td/tg"
+	"go.uber.org/zap"
 
 	"telesrv/internal/domain"
 )
@@ -48,6 +49,23 @@ func (r *Router) BuildOutboxUpdates(ctx context.Context, requests []OutboxUpdate
 	// viewer-specific update has been built so one outbox claim never turns into
 	// a registry query per event/session.
 	r.applyUsernamesToUpdatesBatch(ctx, out)
+	// Every pushed user object is an authoritative client-cache replacement.
+	// Re-apply durable freezes at the final outbox boundary so a regular message
+	// update cannot erase the frozen account's deleted tombstone or snowflake.
+	viewerUserIDs := make([]int64, len(out))
+	responses := make([]any, len(out))
+	for i, update := range out {
+		viewerUserID := requests[i].TargetUserID
+		if viewerUserID == 0 {
+			viewerUserID = requests[i].Event.UserID
+		}
+		viewerUserIDs[i] = viewerUserID
+		responses[i] = update
+	}
+	if err := r.applyAuthoritativeAccountFreezesToResponses(ctx, viewerUserIDs, responses); err != nil && r.log != nil {
+		r.log.Error("apply authoritative account freeze outbox projection",
+			zap.Error(err))
+	}
 	return out
 }
 

@@ -254,6 +254,31 @@ func TestMessageReplyFromInputStorySucceedsAndProjectsStoryHeader(t *testing.T) 
 	}
 }
 
+func TestMessageReplyHeaderPlainTextQuoteOmitsEmptyEntities(t *testing.T) {
+	peer := domain.Peer{Type: domain.PeerTypeChannel, ID: 31}
+	header, ok := tgMessageReplyHeader(domain.Message{
+		Peer: peer,
+		ReplyTo: &domain.MessageReply{
+			MessageID:   6637,
+			Peer:        peer,
+			QuoteText:   "plain text quote",
+			QuoteOffset: 0,
+		},
+	}).(*tg.MessageReplyHeader)
+	if !ok {
+		t.Fatalf("header = %T, want *tg.MessageReplyHeader", header)
+	}
+	if quote, present := header.GetQuoteText(); !present || quote != "plain text quote" {
+		t.Fatalf("quote text = %q, present = %v", quote, present)
+	}
+	if _, present := header.GetQuoteEntities(); present {
+		t.Fatal("empty quote entities must not set the optional quote_entities presence bit")
+	}
+	if offset, present := header.GetQuoteOffset(); !present || offset != 0 {
+		t.Fatalf("quote offset = %d, present = %v", offset, present)
+	}
+}
+
 func TestMessageReplyFromInputEmptyMessageIsAbsent(t *testing.T) {
 	const userID = int64(1000000001)
 	ctx := WithUserID(context.Background(), userID)

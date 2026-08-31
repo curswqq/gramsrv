@@ -197,7 +197,7 @@ func TestAccountFreezesBatchesAndReturnsOnlyActiveFacts(t *testing.T) {
 		},
 		1002: {UserID: 1002, Frozen: false, Version: 4},
 	}}}
-	svc := NewService(Dependencies{Restrictions: store, Now: fixedNow})
+	svc := NewService(Dependencies{Restrictions: store, AccountFreezeBadgeIconDocumentID: 9001, Now: fixedNow})
 
 	got, err := svc.AccountFreezes(context.Background(), []int64{1001, 1001, 0, 1002})
 	if err != nil {
@@ -206,7 +206,7 @@ func TestAccountFreezesBatchesAndReturnsOnlyActiveFacts(t *testing.T) {
 	if len(store.requests) != 1 || !reflect.DeepEqual(store.requests[0], []int64{1001, 1002}) {
 		t.Fatalf("batch requests = %v, want one deduplicated request", store.requests)
 	}
-	if len(got) != 1 || !got[1001].Frozen || got[1001].Version != 2 {
+	if len(got) != 1 || !got[1001].Frozen || got[1001].Version != 2 || got[1001].BadgeIconDocumentID != 9001 {
 		t.Fatalf("AccountFreezes = %+v, want active user 1001 only", got)
 	}
 }

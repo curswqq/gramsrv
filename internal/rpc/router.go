@@ -88,6 +88,9 @@ type Config struct {
 	// DevStarsPurchaseBlocked disables every local fiat Stars top-up, friend
 	// gift and giveaway checkout while preserving existing Stars balances.
 	DevStarsPurchaseBlocked bool
+	// AccountFreezeBadgeBotUserID attributes the synthetic public snowflake
+	// BotVerification. The icon itself travels with the viewer projection.
+	AccountFreezeBadgeBotUserID int64
 	// UpdatePublicURL is advertised as help.getConfig.autoupdate_url_prefix.
 	// Empty keeps the native desktop updater disabled.
 	UpdatePublicURL string

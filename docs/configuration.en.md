@@ -692,6 +692,8 @@ its mark.
 | `TELESRV_BOT_VERIFICATION_MAX_PER_VERIFIER` | int / `10000` | Peers one verifier bot may mark. Verifier status is granted per deployment rather than earned per peer, so an unbounded verifier would be an unbounded badge printer. Spent only on a *new* mark — an existing one stays re-describable at the bound. `0` disables the service bound and leaves only the storage bound, which is also the maximum accepted (`10000`). |
 | `TELESRV_BOT_VERIFICATION_REQUEST_RATE_LIMIT` | int / `5` | Verification applications one applicant may file per window, across all verifier bots. Spent last among the creation checks, so a refused application costs no budget. `0` disables it; must be non-negative. |
 | `TELESRV_BOT_VERIFICATION_REQUEST_RATE_WINDOW` | duration / `24h` | Window for the application budget. Must be positive whenever the limit is set: a positive limit with a zero window is a limiter that never refills. |
+| `TELESRV_ACCOUNT_FREEZE_BADGE_ICON_DOCUMENT_ID` | int64 / `0` | Existing custom-emoji document used as the viewer-scoped snowflake on frozen accounts. `0` keeps the privacy-safe deleted-style projection but omits the badge; use a document selected from the admin Emoji catalogue so clients can fetch it. |
+| `TELESRV_ACCOUNT_FREEZE_BADGE_BOT_USER_ID` | int64 / `1250000013` | Bot attributed in the synthetic `botVerification` payload. Required to be positive when the icon is enabled; it does not grant freeze permissions or replace durable third-party marks. |
 
 The application budget is deliberately looser than the official one (`TELESRV_VERIFICATION_APPLY_RATE_LIMIT=3`): a
 deployment can run several verifier companies, and filing with a second one is not a retry of the first. Both keys are

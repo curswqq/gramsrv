@@ -40,6 +40,10 @@ type AccountFreeze struct {
 	Actor     string
 	CommandID string
 	UpdatedAt time.Time
+	// BadgeIconDocumentID is a projection-only custom emoji document used for
+	// the public snowflake marker. Stores do not persist it; the admin service
+	// decorates durable rows from deployment configuration.
+	BadgeIconDocumentID int64
 }
 
 // AccountFreezeNotification is a durable, coalesced online refresh for one

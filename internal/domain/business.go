@@ -33,13 +33,14 @@ var (
 )
 
 type BusinessProfile struct {
-	UserID        int64
-	WorkHours     *BusinessWorkHours
-	Location      *BusinessLocation
-	Intro         *BusinessIntro
-	Greeting      *BusinessGreetingMessage
-	Away          *BusinessAwayMessage
-	UpdatedAtUnix int64
+	UserID                   int64
+	WorkHours                *BusinessWorkHours
+	Location                 *BusinessLocation
+	Intro                    *BusinessIntro
+	Greeting                 *BusinessGreetingMessage
+	Away                     *BusinessAwayMessage
+	SponsoredMessagesEnabled bool
+	UpdatedAtUnix            int64
 }
 
 type BusinessWeeklyOpen struct {
@@ -108,6 +109,7 @@ type BusinessBotRecipients struct {
 type ConnectedBusinessBot struct {
 	OwnerUserID   int64
 	BotUserID     int64
+	ConnectionID  string
 	Recipients    BusinessBotRecipients
 	Rights        BusinessBotRights
 	CreatedAtUnix int64
@@ -203,6 +205,7 @@ type QuickReplyMessage struct {
 	Date        int
 	Message     string
 	Entities    []MessageEntity
+	Media       *MessageMedia
 }
 
 type QuickReplyList struct {

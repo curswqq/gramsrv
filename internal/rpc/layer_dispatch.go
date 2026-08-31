@@ -11,6 +11,7 @@ import (
 
 	"github.com/iamxvbaba/td/tlprofile"
 	compatandroid "telesrv/internal/compat/android"
+	"telesrv/internal/domain"
 	"telesrv/internal/observability/dbtrace"
 )
 
@@ -275,6 +276,16 @@ func (r *Router) DispatchAdmitted(
 	dbBefore := dbtrace.SnapshotFromContext(ctx)
 	start := time.Now()
 	result, err := r.dispatcher.Dispatch(ctx, request)
+	if err == nil && result != nil {
+		viewerUserID, _ := UserIDFrom(ctx)
+		if projectionErr := r.applyAuthoritativeAccountFreezesToResponse(ctx, viewerUserID, result.CanonicalValue()); projectionErr != nil {
+			err = internalErr()
+			if r.log != nil {
+				r.log.Error("apply authoritative account freeze response projection",
+					append(r.contextLogFields(ctx), zap.Error(projectionErr))...)
+			}
+		}
+	}
 	dur := time.Since(start)
 	dbDelta := dbtrace.SnapshotFromContext(ctx).Sub(dbBefore)
 	fields := append([]zap.Field{
@@ -309,6 +320,7 @@ type layerRPCWrapperEffect struct {
 	semantic tlprofile.SemanticID
 	layer    int
 	info     ClientInfo
+	business *domain.ConnectedBusinessBot
 }
 
 func (r *Router) snapshotLayerRPCWrapperEffects(ctx context.Context, request tlprofile.Admission) ([]layerRPCWrapperEffect, error) {
@@ -347,6 +359,23 @@ func (r *Router) snapshotLayerRPCWrapperEffects(ctx context.Context, request tlp
 				return nil, err
 			}
 			effect.info = info
+		case tlprofile.SemanticMethodInvokeWithBusinessConnection:
+			connectionID, err := layerWrapperRequired[string](wrapper, "connection_id")
+			if err != nil || connectionID == "" {
+				return nil, businessConnectionInvalidErr()
+			}
+			botUserID, ok := UserIDFrom(ctx)
+			if !ok || !r.userIsBot(ctx, botUserID) {
+				return nil, businessConnectionNotAllowedErr()
+			}
+			connection, err := r.resolveBusinessConnectionForBot(ctx, connectionID, botUserID)
+			if err != nil {
+				return nil, err
+			}
+			if !businessConnectionMethodAllowed(request.Call().Method(), connection.Rights) {
+				return nil, botAccessForbiddenErr()
+			}
+			effect.business = &connection
 		case tlprofile.SemanticMethodInvokeAfterMsg, tlprofile.SemanticMethodInvokeAfterMsgs:
 			// Dependency completion is an MTProto message-lifecycle fact. The edge
 			// validates it before scheduling this one-shot admission lease.
@@ -423,6 +452,11 @@ func (r *Router) applyLayerRPCWrapperEffects(
 					zap.String("client_type", string(ClientTypeFrom(ctx))),
 				)
 			}
+		case tlprofile.SemanticMethodInvokeWithBusinessConnection:
+			if effect.business != nil {
+				ctx = withBusinessConnection(ctx, *effect.business)
+				ctx = WithUserID(ctx, effect.business.OwnerUserID)
+			}
 		}
 	}
 	return context.WithValue(ctx, layerWrappersAppliedKey{}, identity)
@@ -455,7 +489,8 @@ func (r *Router) validateLayerRPCWrappers(ctx context.Context, request tlprofile
 			tlprofile.SemanticMethodInvokeWithoutUpdates,
 			tlprofile.SemanticMethodInitConnection,
 			tlprofile.SemanticMethodInvokeAfterMsg,
-			tlprofile.SemanticMethodInvokeAfterMsgs:
+			tlprofile.SemanticMethodInvokeAfterMsgs,
+			tlprofile.SemanticMethodInvokeWithBusinessConnection:
 			continue
 		default:
 			_, name, _ := tlprofile.SemanticName(wrapper.Semantic())

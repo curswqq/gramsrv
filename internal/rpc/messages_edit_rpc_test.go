@@ -129,7 +129,7 @@ func TestMessagesEditMessageOptionBoundaries(t *testing.T) {
 				req.SetQuickReplyShortcutID(11)
 				return req
 			}(),
-			want: "MESSAGE_ID_INVALID",
+			want: "SHORTCUT_INVALID",
 		},
 		{
 			name: "unsupported media",

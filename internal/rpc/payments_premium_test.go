@@ -182,8 +182,8 @@ func TestPremiumGiftOptionsAndPaymentFormUseServerCatalog(t *testing.T) {
 	}
 }
 
-func TestNativePremiumGiftCodeUsesFiatCheckoutAndRejectsReplay(t *testing.T) {
-	r, premium, _, buyer, recipient := premiumRPCTestRouter(t)
+func TestNativePremiumGiftCodeTestCheckoutIsDisabled(t *testing.T) {
+	r, _, _, buyer, recipient := premiumRPCTestRouter(t)
 	ctx := WithUserID(context.Background(), buyer.ID)
 	option := tg.PremiumGiftCodeOption{Users: 1, Months: 3, Currency: "USD", Amount: 750}
 	invoice := &tg.InputInvoicePremiumGiftCode{
@@ -193,29 +193,29 @@ func TestNativePremiumGiftCodeUsesFiatCheckoutAndRejectsReplay(t *testing.T) {
 		},
 		Option: option,
 	}
-	resolved, err := r.resolvePremiumInvoice(ctx, buyer.ID, invoice)
-	if err != nil {
-		t.Fatalf("resolve fiat Premium gift: %v", err)
-	}
-	if resolved.EffectiveDebitStars() || resolved.EffectivePaymentCurrency() != "USD" ||
-		resolved.EffectivePaymentAmount() != 750 {
-		t.Fatalf("resolved fiat invoice = %+v", resolved)
-	}
-	form, err := r.premiumPaymentForm(ctx, buyer.ID, invoice)
-	if err != nil {
-		t.Fatalf("fiat Premium payment form: %v", err)
-	}
-	if _, ok := form.(*tg.PaymentsPaymentForm); !ok {
-		t.Fatalf("fiat Premium form = %T, want payments.paymentForm", form)
-	}
-	if premium.issued.EffectiveDebitStars() || premium.issued.PaymentCurrency != "USD" {
-		t.Fatalf("issued fiat form = %+v", premium.issued)
-	}
-
-	premium.purchaseResult = domain.PremiumPurchaseResult{Duplicate: true}
-	_, err = r.sendPremiumStarsForm(ctx, buyer.ID, 99112233, invoice)
-	if !tgerr.Is(err, "INVOICE_ALREADY_PAID") {
-		t.Fatalf("paid invoice replay err=%v, want INVOICE_ALREADY_PAID", err)
+	for name, call := range map[string]func() error{
+		"resolve": func() error {
+			_, err := r.resolvePremiumInvoice(ctx, buyer.ID, invoice)
+			return err
+		},
+		"payment form": func() error {
+			_, err := r.premiumPaymentForm(ctx, buyer.ID, invoice)
+			return err
+		},
+		"validate requested info": func() error {
+			_, err := r.onPaymentsValidateRequestedInfo(ctx, &tg.PaymentsValidateRequestedInfoRequest{Invoice: invoice})
+			return err
+		},
+		"send payment form": func() error {
+			_, err := r.onPaymentsSendPaymentForm(ctx, &tg.PaymentsSendPaymentFormRequest{FormID: 99112233, Invoice: invoice})
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := call(); !tgerr.Is(err, "PREMIUM_PURCHASE_BLOCKED") {
+				t.Fatalf("err=%v, want PREMIUM_PURCHASE_BLOCKED", err)
+			}
+		})
 	}
 }
 

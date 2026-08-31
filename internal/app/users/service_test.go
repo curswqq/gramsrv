@@ -11,6 +11,52 @@ import (
 	"telesrv/internal/store/memory"
 )
 
+type usernameProfilePhotos map[int64]domain.ProfilePhotoRef
+
+func (p usernameProfilePhotos) CurrentProfilePhotos(_ context.Context, _ domain.PeerType, ids []int64) (map[int64]domain.ProfilePhotoRef, error) {
+	out := make(map[int64]domain.ProfilePhotoRef, len(ids))
+	for _, id := range ids {
+		if ref, ok := p[id]; ok {
+			out[id] = ref
+		}
+	}
+	return out, nil
+}
+
+func TestUpdateUsernameKeepsProjectedAvatar(t *testing.T) {
+	ctx := context.Background()
+	users := memory.NewUserStore()
+	owner, err := users.Create(ctx, domain.User{AccessHash: 1, Phone: "15550000991", FirstName: "Owner"})
+	if err != nil {
+		t.Fatalf("create owner: %v", err)
+	}
+	want := domain.ProfilePhotoRef{PhotoID: 991, DCID: 2, Stripped: []byte{1, 2, 3}, HasVideo: true}
+	svc := NewService(users, WithPhotoProvider(usernameProfilePhotos{owner.ID: want}))
+
+	updated, err := svc.UpdateUsername(ctx, owner.ID, "owner_avatar")
+	if err != nil {
+		t.Fatalf("update username: %v", err)
+	}
+	if updated.PhotoID != want.PhotoID || updated.PhotoDCID != want.DCID || updated.PhotoHasVideo != want.HasVideo || string(updated.PhotoStripped) != string(want.Stripped) {
+		t.Fatalf("projected avatar = id %d dc %d video %v stripped %v, want %+v", updated.PhotoID, updated.PhotoDCID, updated.PhotoHasVideo, updated.PhotoStripped, want)
+	}
+	stored, found, err := users.ByID(ctx, owner.ID)
+	if err != nil || !found {
+		t.Fatalf("load stored owner: found=%v err=%v", found, err)
+	}
+	if stored.PhotoID != 0 || stored.PhotoDCID != 0 || len(stored.PhotoStripped) != 0 {
+		t.Fatalf("base user was polluted by projected avatar: %+v", stored)
+	}
+
+	unchanged, err := svc.UpdateUsername(ctx, owner.ID, "owner_avatar")
+	if err != nil {
+		t.Fatalf("repeat username: %v", err)
+	}
+	if unchanged.PhotoID != want.PhotoID {
+		t.Fatalf("no-op username update lost avatar: %+v", unchanged)
+	}
+}
+
 func TestServiceUsernameLifecycle(t *testing.T) {
 	ctx := context.Background()
 	store := memory.NewUserStore()

@@ -1308,6 +1308,39 @@ func TestContactsStatusesUsesPersistedLastSeen(t *testing.T) {
 	}
 }
 
+func TestPresenceSweepPersistsExpiredSessionActivity(t *testing.T) {
+	ctx := context.Background()
+	users := memory.NewUserStore()
+	user, err := users.Create(ctx, domain.User{AccessHash: 44, Phone: "1044", FirstName: "Expired"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	const (
+		now          = 1700000600
+		lastActivity = 1700000300
+	)
+	r := New(Config{}, Deps{Users: appusers.NewService(users)}, zaptest.NewLogger(t), fixedClock{now: time.Unix(now, 0)})
+	r.presence.setSessionStatus(presenceSessionKey{sessionID: 44}, user.ID, domain.UserStatus{
+		Kind:      domain.UserStatusOnline,
+		Expires:   now - 1,
+		WasOnline: lastActivity,
+	})
+
+	r.sweepExpiredPresence(ctx)
+
+	stored, found, err := users.ByID(ctx, user.ID)
+	if err != nil || !found {
+		t.Fatalf("load swept user: found=%v err=%v", found, err)
+	}
+	if stored.LastSeenAt != lastActivity {
+		t.Fatalf("last_seen_at after TTL sweep = %d, want last activity %d", stored.LastSeenAt, lastActivity)
+	}
+	status := r.userPresenceStatusForUser(stored)
+	if status.Kind != domain.UserStatusOffline || status.WasOnline != lastActivity {
+		t.Fatalf("presence after TTL sweep = %+v, want offline at %d", status, lastActivity)
+	}
+}
+
 func TestContactsStatusesUsePresenceAndContactsKeepStableProjection(t *testing.T) {
 	ctx := context.Background()
 	alice := domain.User{ID: 1000000001, AccessHash: 11, FirstName: "Alice"}

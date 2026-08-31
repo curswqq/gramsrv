@@ -21,12 +21,13 @@ SELECT
   COALESCE(intro::text, '{}')::text,
   COALESCE(greeting_message::text, '{}')::text,
   COALESCE(away_message::text, '{}')::text,
+	 sponsored_messages_enabled,
   COALESCE(EXTRACT(EPOCH FROM updated_at), 0)::bigint
 FROM user_business_profiles
 WHERE user_id = $1`, userID)
 	var workHoursJSON, locationJSON, introJSON, greetingJSON, awayJSON string
 	profile := domain.BusinessProfile{UserID: userID}
-	if err := row.Scan(&workHoursJSON, &locationJSON, &introJSON, &greetingJSON, &awayJSON, &profile.UpdatedAtUnix); err != nil {
+	if err := row.Scan(&workHoursJSON, &locationJSON, &introJSON, &greetingJSON, &awayJSON, &profile.SponsoredMessagesEnabled, &profile.UpdatedAtUnix); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.BusinessProfile{}, false, nil
 		}
@@ -73,15 +74,16 @@ func (s *PasswordStore) SaveBusinessProfile(ctx context.Context, profile domain.
 	}
 	if _, err := s.db.Exec(ctx, `
 INSERT INTO user_business_profiles (
-  user_id, work_hours, location, intro, greeting_message, away_message, updated_at
-) VALUES ($1,$2::jsonb,$3::jsonb,$4::jsonb,$5::jsonb,$6::jsonb,now())
+  user_id, work_hours, location, intro, greeting_message, away_message, sponsored_messages_enabled, updated_at
+) VALUES ($1,$2::jsonb,$3::jsonb,$4::jsonb,$5::jsonb,$6::jsonb,$7,now())
 ON CONFLICT (user_id) DO UPDATE SET
   work_hours = EXCLUDED.work_hours,
   location = EXCLUDED.location,
   intro = EXCLUDED.intro,
   greeting_message = EXCLUDED.greeting_message,
   away_message = EXCLUDED.away_message,
-  updated_at = now()`, profile.UserID, string(workHours), string(location), string(intro), string(greeting), string(away)); err != nil {
+	 sponsored_messages_enabled = EXCLUDED.sponsored_messages_enabled,
+  updated_at = now()`, profile.UserID, string(workHours), string(location), string(intro), string(greeting), string(away), profile.SponsoredMessagesEnabled); err != nil {
 		return fmt.Errorf("save business profile: %w", err)
 	}
 	return nil
@@ -272,10 +274,14 @@ func (s *PasswordStore) SaveQuickReplyText(ctx context.Context, ownerUserID int6
 		if err != nil {
 			return err
 		}
+		media, err := encodeMessageMedia(msg.Media)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `
-INSERT INTO quick_reply_messages (owner_user_id, shortcut_id, message_id, random_id, message_date, body, entities, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,now(),now())`,
-			ownerUserID, shortcutID, messageID, msg.RandomID, msg.Date, msg.Message, string(entities)); err != nil {
+INSERT INTO quick_reply_messages (owner_user_id, shortcut_id, message_id, random_id, message_date, body, entities, media, created_at, updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,now(),now())`,
+			ownerUserID, shortcutID, messageID, msg.RandomID, msg.Date, msg.Message, string(entities), string(media)); err != nil {
 			return fmt.Errorf("insert quick reply message: %w", err)
 		}
 		replies, err := listQuickRepliesTx(ctx, tx, ownerUserID)
@@ -290,6 +296,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,now(),now())`,
 			Date:        msg.Date,
 			Message:     msg.Message,
 			Entities:    append([]domain.MessageEntity(nil), msg.Entities...),
+			Media:       msg.Media,
 		}
 		reply := quickReplyByID(replies, shortcutID)
 		kind := domain.QuickReplyMutationMessage
@@ -311,6 +318,50 @@ VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,now(),now())`,
 	return mutation, nil
 }
 
+func (s *PasswordStore) ReplaceQuickReplyMessage(ctx context.Context, ownerUserID int64, shortcutID, messageID int, msg domain.QuickReplyMessage) (domain.QuickReplyMutation, error) {
+	entities, err := encodeMessageEntities(msg.Entities)
+	if err != nil {
+		return domain.QuickReplyMutation{}, err
+	}
+	media, err := encodeMessageMedia(msg.Media)
+	if err != nil {
+		return domain.QuickReplyMutation{}, err
+	}
+	var randomID int64
+	var previousDate int
+	err = s.db.QueryRow(ctx, `
+UPDATE quick_reply_messages
+SET body = $4,
+    entities = $5::jsonb,
+    media = $6::jsonb,
+    message_date = CASE WHEN $7::int = 0 THEN message_date ELSE $7::int END,
+    updated_at = now()
+WHERE owner_user_id = $1 AND shortcut_id = $2 AND message_id = $3
+RETURNING random_id, message_date`, ownerUserID, shortcutID, messageID, msg.Message, string(entities), string(media), msg.Date).Scan(&randomID, &previousDate)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.QuickReplyMutation{}, domain.ErrShortcutInvalid
+	}
+	if err != nil {
+		return domain.QuickReplyMutation{}, fmt.Errorf("replace quick reply message: %w", err)
+	}
+	msg.OwnerUserID = ownerUserID
+	msg.ShortcutID = shortcutID
+	msg.ID = messageID
+	msg.RandomID = randomID
+	msg.Date = previousDate
+	list, err := s.ListQuickReplies(ctx, ownerUserID, true)
+	if err != nil {
+		return domain.QuickReplyMutation{}, err
+	}
+	return domain.QuickReplyMutation{
+		Kind:       domain.QuickReplyMutationMessage,
+		List:       list,
+		QuickReply: quickReplyByID(list.QuickReplies, shortcutID),
+		ShortcutID: shortcutID,
+		Message:    msg,
+	}, nil
+}
+
 func (s *PasswordStore) GetQuickReplyMessages(ctx context.Context, ownerUserID int64, shortcutID int, ids []int) (domain.QuickReplyMessages, error) {
 	if err := s.ensureQuickReplyExists(ctx, ownerUserID, shortcutID); err != nil {
 		return domain.QuickReplyMessages{}, err
@@ -326,7 +377,7 @@ func (s *PasswordStore) GetQuickReplyMessages(ctx context.Context, ownerUserID i
 		args = append(args, ids32)
 	}
 	rows, err := s.db.Query(ctx, `
-SELECT message_id, random_id, message_date, body, COALESCE(entities::text, '[]')::text
+SELECT message_id, random_id, message_date, body, COALESCE(entities::text, '[]')::text, COALESCE(media::text, '{}')::text
 FROM quick_reply_messages
 WHERE owner_user_id = $1
   AND shortcut_id = $2`+filter+`
@@ -500,7 +551,7 @@ LIMIT 1`, ownerUserID, peerUserID, string(kind))
 
 func (s *PasswordStore) GetConnectedBusinessBot(ctx context.Context, ownerUserID int64) (domain.ConnectedBusinessBot, bool, error) {
 	row := s.db.QueryRow(ctx, `
-SELECT owner_user_id, bot_user_id, COALESCE(recipients::text, '{}')::text, COALESCE(rights::text, '{}')::text,
+SELECT owner_user_id, bot_user_id, connection_id, COALESCE(recipients::text, '{}')::text, COALESCE(rights::text, '{}')::text,
        COALESCE(EXTRACT(EPOCH FROM created_at), 0)::bigint,
        COALESCE(EXTRACT(EPOCH FROM updated_at), 0)::bigint
 FROM business_connected_bots
@@ -515,6 +566,23 @@ WHERE owner_user_id = $1`, ownerUserID)
 	return bot, true, nil
 }
 
+func (s *PasswordStore) GetConnectedBusinessBotByConnectionID(ctx context.Context, connectionID string) (domain.ConnectedBusinessBot, bool, error) {
+	row := s.db.QueryRow(ctx, `
+SELECT owner_user_id, bot_user_id, connection_id, COALESCE(recipients::text, '{}')::text, COALESCE(rights::text, '{}')::text,
+       COALESCE(EXTRACT(EPOCH FROM created_at), 0)::bigint,
+       COALESCE(EXTRACT(EPOCH FROM updated_at), 0)::bigint
+FROM business_connected_bots
+WHERE connection_id = $1`, strings.TrimSpace(connectionID))
+	bot, err := scanConnectedBusinessBot(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ConnectedBusinessBot{}, false, nil
+		}
+		return domain.ConnectedBusinessBot{}, false, fmt.Errorf("get connected business bot by connection id: %w", err)
+	}
+	return bot, true, nil
+}
+
 func (s *PasswordStore) SaveConnectedBusinessBot(ctx context.Context, bot domain.ConnectedBusinessBot) (domain.ConnectedBusinessBot, error) {
 	recipients, err := json.Marshal(bot.Recipients)
 	if err != nil {
@@ -525,16 +593,17 @@ func (s *PasswordStore) SaveConnectedBusinessBot(ctx context.Context, bot domain
 		return domain.ConnectedBusinessBot{}, fmt.Errorf("encode connected business bot rights: %w", err)
 	}
 	row := s.db.QueryRow(ctx, `
-INSERT INTO business_connected_bots (owner_user_id, bot_user_id, recipients, rights, created_at, updated_at)
-VALUES ($1,$2,$3::jsonb,$4::jsonb,now(),now())
+INSERT INTO business_connected_bots (owner_user_id, bot_user_id, connection_id, recipients, rights, created_at, updated_at)
+VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,now(),now())
 ON CONFLICT (owner_user_id) DO UPDATE SET
   bot_user_id = EXCLUDED.bot_user_id,
+	 connection_id = EXCLUDED.connection_id,
   recipients = EXCLUDED.recipients,
   rights = EXCLUDED.rights,
   updated_at = now()
-RETURNING owner_user_id, bot_user_id, COALESCE(recipients::text, '{}')::text, COALESCE(rights::text, '{}')::text,
+RETURNING owner_user_id, bot_user_id, connection_id, COALESCE(recipients::text, '{}')::text, COALESCE(rights::text, '{}')::text,
           COALESCE(EXTRACT(EPOCH FROM created_at), 0)::bigint,
-          COALESCE(EXTRACT(EPOCH FROM updated_at), 0)::bigint`, bot.OwnerUserID, bot.BotUserID, string(recipients), string(rights))
+          COALESCE(EXTRACT(EPOCH FROM updated_at), 0)::bigint`, bot.OwnerUserID, bot.BotUserID, bot.ConnectionID, string(recipients), string(rights))
 	saved, err := scanConnectedBusinessBot(row)
 	if err != nil {
 		return domain.ConnectedBusinessBot{}, fmt.Errorf("save connected business bot: %w", err)
@@ -637,6 +706,7 @@ LEFT JOIN quick_reply_messages qm
  AND qm.shortcut_id = qr.shortcut_id
 WHERE qr.owner_user_id = $1
 GROUP BY qr.shortcut_id, qr.shortcut, qr.sort_order, qr.created_at, qr.updated_at
+HAVING COUNT(qm.message_id) > 0
 ORDER BY qr.sort_order ASC, qr.shortcut_id ASC
 LIMIT $2`, ownerUserID, domain.MaxQuickReplies)
 	if err != nil {
@@ -732,10 +802,10 @@ func scanQuickReplyMessage(ownerUserID int64, shortcutID int, row interface {
 	Scan(dest ...any) error
 }) (domain.QuickReplyMessage, error) {
 	var msg domain.QuickReplyMessage
-	var entitiesJSON string
+	var entitiesJSON, mediaJSON string
 	msg.OwnerUserID = ownerUserID
 	msg.ShortcutID = shortcutID
-	if err := row.Scan(&msg.ID, &msg.RandomID, &msg.Date, &msg.Message, &entitiesJSON); err != nil {
+	if err := row.Scan(&msg.ID, &msg.RandomID, &msg.Date, &msg.Message, &entitiesJSON, &mediaJSON); err != nil {
 		return domain.QuickReplyMessage{}, fmt.Errorf("scan quick reply message: %w", err)
 	}
 	entities, err := decodeMessageEntities(entitiesJSON)
@@ -743,6 +813,11 @@ func scanQuickReplyMessage(ownerUserID int64, shortcutID int, row interface {
 		return domain.QuickReplyMessage{}, fmt.Errorf("decode quick reply entities: %w", err)
 	}
 	msg.Entities = entities
+	media, err := decodeMessageMedia(mediaJSON)
+	if err != nil {
+		return domain.QuickReplyMessage{}, fmt.Errorf("decode quick reply media: %w", err)
+	}
+	msg.Media = media
 	return msg, nil
 }
 
@@ -751,7 +826,7 @@ func scanConnectedBusinessBot(row interface {
 }) (domain.ConnectedBusinessBot, error) {
 	var bot domain.ConnectedBusinessBot
 	var recipientsJSON, rightsJSON string
-	if err := row.Scan(&bot.OwnerUserID, &bot.BotUserID, &recipientsJSON, &rightsJSON, &bot.CreatedAtUnix, &bot.UpdatedAtUnix); err != nil {
+	if err := row.Scan(&bot.OwnerUserID, &bot.BotUserID, &bot.ConnectionID, &recipientsJSON, &rightsJSON, &bot.CreatedAtUnix, &bot.UpdatedAtUnix); err != nil {
 		return domain.ConnectedBusinessBot{}, err
 	}
 	if recipientsJSON != "" && recipientsJSON != "{}" {
@@ -827,6 +902,9 @@ func postgresQuickReplyMessagesHash(items []domain.QuickReplyMessage) int64 {
 		postgresWriteHashInt(h, item.ID)
 		postgresWriteHashString(h, item.Message)
 		postgresWriteHashInt(h, item.Date)
+		if media, err := json.Marshal(item.Media); err == nil {
+			_, _ = h.Write(media)
+		}
 	}
 	return int64(h.Sum64() & 0x7fffffffffffffff)
 }

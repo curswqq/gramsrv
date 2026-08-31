@@ -639,11 +639,23 @@ func reapplyExclusiveCollectiblePhone(user domain.User, phone domain.Collectible
 func applyAccountFreezeProjection(user domain.User, viewerUserID int64, freeze domain.AccountFreeze) domain.User {
 	// Base users and self users must never retain a viewer-scoped restriction.
 	user.RestrictionReasons = nil
+	user.PublicFrozen = false
+	user.FrozenBadgeIconDocumentID = 0
 	if user.Deleted || viewerUserID == 0 || user.ID == 0 || user.ID == viewerUserID || !freeze.Frozen {
 		return user
 	}
-	user.RestrictionReasons = domain.AccountFrozenRestrictionReasons()
-	return user
+	// Telegram exposes a frozen account to everybody except its owner as a
+	// deleted-style tombstone. This is deliberately a projection, not a durable
+	// deletion: the source row and all account data stay untouched.
+	return domain.User{
+		ID:                        user.ID,
+		AccessHash:                user.AccessHash,
+		Deleted:                   true,
+		PublicFrozen:              true,
+		FrozenBadgeIconDocumentID: freeze.BadgeIconDocumentID,
+		Status:                    domain.UserStatus{Kind: domain.UserStatusEmpty},
+		RestrictionReasons:        domain.AccountFrozenRestrictionReasons(),
+	}
 }
 
 func prefetchPrivacyVisibility(ctx context.Context, privacy PrivacyEvaluator, viewerUserID int64, users []domain.User) (map[int64]map[domain.PrivacyKey]bool, error) {

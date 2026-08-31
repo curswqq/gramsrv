@@ -9,6 +9,12 @@ import (
 )
 
 func (r *Router) onMessagesEditMessage(ctx context.Context, req *tg.MessagesEditMessageRequest) (tg.UpdatesClass, error) {
+	if req == nil {
+		return nil, inputRequestInvalidErr()
+	}
+	if _, ok := req.GetQuickReplyShortcutID(); ok {
+		return r.onMessagesEditQuickReplyMessage(ctx, req)
+	}
 	scheduleDate, hasScheduleDate := req.GetScheduleDate()
 	scheduleRepeatPeriod, hasScheduleRepeatPeriod := req.GetScheduleRepeatPeriod()
 	if hasScheduleRepeatPeriod && scheduleRepeatPeriod != 0 {
@@ -16,9 +22,6 @@ func (r *Router) onMessagesEditMessage(ctx context.Context, req *tg.MessagesEdit
 	}
 	if hasScheduleRepeatPeriod && !hasScheduleDate {
 		return nil, scheduleDateInvalidErr()
-	}
-	if _, ok := req.GetQuickReplyShortcutID(); ok {
-		return nil, messageIDInvalidErr()
 	}
 	message, hasMessage := req.GetMessage()
 	if hasMessage && utf8.RuneCountInString(message) > maxSendMessageTextLength {
@@ -174,6 +177,7 @@ func (r *Router) onMessagesEditMessage(ctx context.Context, req *tg.MessagesEdit
 		return nil, messageEditErr(err)
 	}
 	r.enqueueBotAPIPrivateEditUpdatesAsync(ctx, res)
+	r.pushConnectedBusinessEditedMessage(ctx, res)
 	self := res.Self()
 	if self.Event.Pts == 0 || self.Message.ID == 0 {
 		return nil, messageIDInvalidErr()

@@ -160,6 +160,9 @@ func (r *Router) registerAccount(d *tlprofile.Dispatcher) {
 	registerRPC[*tg.AccountUpdateBusinessAwayMessageRequest](d, tlprofile.SemanticMethodAccountUpdateBusinessAwayMessage, func(ctx context.Context, layerRequest *tg.AccountUpdateBusinessAwayMessageRequest) (any, error) {
 		return r.onAccountUpdateBusinessAwayMessage(ctx, layerRequest)
 	})
+	registerRPC[*tg.AccountToggleSponsoredMessagesRequest](d, tlprofile.SemanticMethodAccountToggleSponsoredMessages, func(ctx context.Context, layerRequest *tg.AccountToggleSponsoredMessagesRequest) (any, error) {
+		return r.onAccountToggleSponsoredMessages(ctx, layerRequest.Enabled)
+	})
 	registerRPC[*tg.AccountGetBusinessChatLinksRequest](d, tlprofile.SemanticMethodAccountGetBusinessChatLinks, func(ctx context.Context, layerRequest *tg.AccountGetBusinessChatLinksRequest) (any, error) {
 		return r.onAccountGetBusinessChatLinks(ctx)
 	})
@@ -182,14 +185,7 @@ func (r *Router) registerAccount(d *tlprofile.Dispatcher) {
 		return r.onAccountUpdateConnectedBot(ctx, layerRequest)
 	})
 	registerRPC[*tg.AccountGetBotBusinessConnectionRequest](d, tlprofile.SemanticMethodAccountGetBotBusinessConnection, func(ctx context.Context, layerRequest *tg.AccountGetBotBusinessConnectionRequest) (any, error) {
-		connectionID := layerRequest.
-			ConnectionID
-		_ = connectionID
-
-		if _, _, err := r.currentUserID(ctx); err != nil {
-			return nil, internalErr()
-		}
-		return nil, tgerr400("BOT_BUSINESS_MISSING")
+		return r.onAccountGetBotBusinessConnection(ctx, layerRequest.ConnectionID)
 	})
 	registerRPC[*tg.AccountToggleConnectedBotPausedRequest](d, tlprofile.SemanticMethodAccountToggleConnectedBotPaused, func(ctx context.Context, layerRequest *tg.AccountToggleConnectedBotPausedRequest) (any, error) {
 		return r.onAccountToggleConnectedBotPaused(ctx, layerRequest)
@@ -1543,6 +1539,12 @@ func (r *Router) onAccountUpdateProfile(ctx context.Context, req *tg.AccountUpda
 	firstName, hasFirstName := req.GetFirstName()
 	lastName, hasLastName := req.GetLastName()
 	about, hasAbout := req.GetAbout()
+	if connection, ok := businessConnectionFrom(ctx); ok {
+		if connection.OwnerUserID != userID || ((hasFirstName || hasLastName) && !connection.Rights.EditName) ||
+			(hasAbout && !connection.Rights.EditBio) {
+			return nil, botAccessForbiddenErr()
+		}
+	}
 	u, err := svc.UpdateProfile(ctx, userID, domain.UserProfileUpdate{
 		FirstName:    firstName,
 		HasFirstName: hasFirstName,

@@ -162,6 +162,11 @@ func scheduleDateIsImmediate(scheduleDate, now int) bool {
 }
 
 func (r *Router) scheduleOutgoing(ctx context.Context, userID int64, peer domain.Peer, p outgoingSend, scheduleDate, repeatPeriod int) (tg.UpdatesClass, error) {
+	if _, ok := businessConnectionFrom(ctx); ok {
+		// Scheduled-message storage does not preserve the business connection ID;
+		// accepting this would later send an unmarked message as the account.
+		return nil, botAccessForbiddenErr()
+	}
 	scheduledSvc, ok := r.deps.Messages.(scheduledMessagesService)
 	if r.deps.Messages == nil || !ok {
 		return nil, peerIDInvalidErr()

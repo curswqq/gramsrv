@@ -525,10 +525,8 @@ func (r *Router) onPaymentsValidateRequestedInfo(ctx context.Context, req *tg.Pa
 		return nil, internalErr()
 	}
 	if inv, ok := req.Invoice.(*tg.InputInvoicePremiumGiftCode); ok {
-		if _, err := r.resolvePremiumInvoice(ctx, userID, inv); err != nil {
-			return nil, err
-		}
-		return &tg.PaymentsValidatedRequestedInfo{}, nil
+		_ = inv
+		return nil, premiumTestPaymentDisabledErr()
 	}
 	inv, ok := req.Invoice.(*tg.InputInvoiceStars)
 	if !ok || inv == nil {
@@ -598,6 +596,9 @@ func (r *Router) onPaymentsSendStarsForm(ctx context.Context, req *tg.PaymentsSe
 	userID, _, err := r.currentUserID(ctx)
 	if err != nil {
 		return nil, internalErr()
+	}
+	if _, ok := req.Invoice.(*tg.InputInvoicePremiumGiftCode); ok {
+		return nil, premiumTestPaymentDisabledErr()
 	}
 
 	switch inv := req.Invoice.(type) {
@@ -742,6 +743,9 @@ func (r *Router) onPaymentsSendPaymentForm(ctx context.Context, req *tg.Payments
 	if inv, ok := req.Invoice.(*tg.InputInvoiceStars); ok && r.cfg.DevStarsPurchaseBlocked && isDevStarsPurchaseInvoice(inv) {
 		return nil, devStarsPurchaseBlockedErr()
 	}
+	if _, ok := req.Invoice.(*tg.InputInvoicePremiumGiftCode); ok {
+		return nil, premiumTestPaymentDisabledErr()
+	}
 	if !validDevStarsPaymentCredentials(req.Credentials, req.FormID) {
 		return nil, tgerr.New(400, "PAYMENT_CREDENTIALS_INVALID")
 	}
@@ -753,9 +757,6 @@ func (r *Router) onPaymentsSendPaymentForm(ctx context.Context, req *tg.Payments
 	}
 	if _, present := req.GetTipAmount(); present || req.TipAmount != 0 {
 		return nil, tgerr.New(400, "TIP_AMOUNT_INVALID")
-	}
-	if inv, ok := req.Invoice.(*tg.InputInvoicePremiumGiftCode); ok {
-		return r.sendPremiumStarsForm(ctx, userID, req.FormID, inv)
 	}
 	inv, ok := req.Invoice.(*tg.InputInvoiceStars)
 	if !ok {

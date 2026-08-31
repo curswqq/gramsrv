@@ -103,7 +103,7 @@ func (r *Router) applyBotVerificationIconsToPeerObjects(ctx context.Context, use
 		peers = append(peers, peer)
 	}
 	for _, item := range users {
-		if u, ok := item.(*tg.User); ok && u != nil {
+		if u, ok := item.(*tg.User); ok && u != nil && !u.Deleted {
 			addPeer(domain.Peer{Type: domain.PeerTypeUser, ID: u.ID})
 		}
 	}
@@ -122,6 +122,12 @@ func (r *Router) applyBotVerificationIconsToPeerObjects(ctx context.Context, use
 	for _, item := range users {
 		u, ok := item.(*tg.User)
 		if !ok || u == nil {
+			continue
+		}
+		// Deleted-style peers must not regain a durable third-party mark. A
+		// frozen account's viewer-scoped snowflake, when configured, is already
+		// present on this object and remains untouched.
+		if u.Deleted {
 			continue
 		}
 		mark, ok := byPeer[domain.Peer{Type: domain.PeerTypeUser, ID: u.ID}]

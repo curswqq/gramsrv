@@ -12,6 +12,9 @@ func (r *Router) pushUserMessage(ctx context.Context, userID int64, logMessage s
 	if r.deps.Sessions == nil || userID == 0 || msg == nil {
 		return 0
 	}
+	if !r.prepareOutboundUpdatesForViewer(ctx, userID, logMessage, msg) {
+		return 0
+	}
 	sessionID, _ := SessionIDFrom(ctx)
 	if timeout := r.cfg.OutboundPushTimeout; timeout > 0 {
 		authKeyID := rawAuthKeyIDForOrigin(ctx)
@@ -41,6 +44,9 @@ func (r *Router) pushUserMessageTransient(ctx context.Context, userID int64, log
 		return 0
 	}
 	if transient, ok := r.deps.Sessions.(TransientSessionBinder); ok {
+		if !r.prepareOutboundUpdatesForViewer(ctx, userID, logMessage, msg) {
+			return 0
+		}
 		sessionID, _ := SessionIDFrom(ctx)
 		authKeyID := rawAuthKeyIDForOrigin(ctx)
 		sent, err := transient.PushToUserTransientExceptAuthKeySession(ctx, userID, authKeyID, sessionID, proto.MessageFromServer, msg, r.cfg.OutboundPushTimeout)
@@ -60,7 +66,26 @@ func (r *Router) pushCurrentSessionMessage(ctx context.Context, logMessage strin
 	if !ok {
 		return
 	}
+	userID, _ := UserIDFrom(ctx)
+	if !r.prepareOutboundUpdatesForViewer(ctx, userID, logMessage, msg) {
+		return
+	}
 	if err := r.deps.Sessions.PushToSessionForAuthKey(ctx, rawAuthKeyIDForOrigin(ctx), sessionID, proto.MessageFromServer, msg); err != nil {
 		r.log.Debug(logMessage, zap.Int64("session_id", sessionID), zap.Error(err))
 	}
+}
+
+// prepareOutboundUpdatesForViewer is the last guard before direct session
+// delivery. It complements the exact-RPC and durable-outbox boundaries.
+func (r *Router) prepareOutboundUpdatesForViewer(ctx context.Context, viewerUserID int64, logMessage string, msg tg.UpdatesClass) bool {
+	if err := r.applyAuthoritativeAccountFreezesToResponse(ctx, viewerUserID, msg); err != nil {
+		if r.log != nil {
+			r.log.Error("apply authoritative account freeze push projection",
+				zap.String("operation", logMessage),
+				zap.Int64("viewer_user_id", viewerUserID),
+				zap.Error(err))
+		}
+		return false
+	}
+	return true
 }

@@ -11,7 +11,7 @@ import (
 func tgSelfUser(u domain.User) *tg.User {
 	u = officialSystemUserPresentation(u)
 	if u.Deleted {
-		return &tg.User{ID: u.ID, Deleted: true}
+		return tgDeletedStyleUser(u)
 	}
 	out := &tg.User{
 		ID:            u.ID,
@@ -45,7 +45,7 @@ func tgSelfUser(u domain.User) *tg.User {
 func tgUser(u domain.User) *tg.User {
 	u = officialSystemUserPresentation(u)
 	if u.Deleted {
-		return &tg.User{ID: u.ID, Deleted: true}
+		return tgDeletedStyleUser(u)
 	}
 	out := &tg.User{
 		ID:            u.ID,
@@ -71,6 +71,14 @@ func tgUser(u domain.User) *tg.User {
 	}
 	if photo := tgUserProfilePhoto(u); photo != nil {
 		out.Photo = photo
+	}
+	return out
+}
+
+func tgDeletedStyleUser(u domain.User) *tg.User {
+	out := &tg.User{ID: u.ID, Deleted: true}
+	if u.PublicFrozen && u.FrozenBadgeIconDocumentID > 0 {
+		out.SetBotVerificationIcon(u.FrozenBadgeIconDocumentID)
 	}
 	return out
 }

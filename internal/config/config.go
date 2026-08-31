@@ -532,6 +532,13 @@ type Config struct {
 	// verifier bots. 0 for either disables the budget.
 	BotVerificationRequestRateLimit  int
 	BotVerificationRequestRateWindow time.Duration
+	// AccountFreezeBadgeIconDocumentID is the custom emoji document used for
+	// Telegram's snowflake marker on the deleted-style public projection. Zero
+	// keeps the safe deleted-style fallback without an icon.
+	AccountFreezeBadgeIconDocumentID int64
+	// AccountFreezeBadgeBotUserID attributes the synthetic BotVerification
+	// payload. It does not grant that bot permission to mutate freeze state.
+	AccountFreezeBadgeBotUserID int64
 
 	// CollectibleUsernameURLTemplate is the landing URL recorded on a minted
 	// collectible username when the mint request carries no explicit URL.
@@ -959,6 +966,8 @@ func Load() (Config, error) {
 		// verifier bots, and filing with a second company is not a retry of the first.
 		BotVerificationRequestRateLimit:  envIntOr("TELESRV_BOT_VERIFICATION_REQUEST_RATE_LIMIT", 5),
 		BotVerificationRequestRateWindow: envDurationOr("TELESRV_BOT_VERIFICATION_REQUEST_RATE_WINDOW", 24*time.Hour),
+		AccountFreezeBadgeIconDocumentID: envInt64Or("TELESRV_ACCOUNT_FREEZE_BADGE_ICON_DOCUMENT_ID", 0),
+		AccountFreezeBadgeBotUserID:      envInt64Or("TELESRV_ACCOUNT_FREEZE_BADGE_BOT_USER_ID", domain.VerifierBotUserID),
 
 		GroupCallCheckTTL:        envDurationOr("TELESRV_GROUPCALL_CHECK_TTL", 45*time.Second),
 		GroupCallSweepInterval:   envDurationOr("TELESRV_GROUPCALL_SWEEP_INTERVAL", 10*time.Second),
@@ -1297,6 +1306,12 @@ func validateVerificationConfig(cfg Config) error {
 	// not "unlimited", it is a limiter that can never refill.
 	if cfg.BotVerificationRequestRateLimit > 0 && cfg.BotVerificationRequestRateWindow <= 0 {
 		return fmt.Errorf("TELESRV_BOT_VERIFICATION_REQUEST_RATE_WINDOW must be positive when TELESRV_BOT_VERIFICATION_REQUEST_RATE_LIMIT is set")
+	}
+	if cfg.AccountFreezeBadgeIconDocumentID < 0 {
+		return fmt.Errorf("TELESRV_ACCOUNT_FREEZE_BADGE_ICON_DOCUMENT_ID must be non-negative")
+	}
+	if cfg.AccountFreezeBadgeIconDocumentID > 0 && cfg.AccountFreezeBadgeBotUserID <= 0 {
+		return fmt.Errorf("TELESRV_ACCOUNT_FREEZE_BADGE_BOT_USER_ID must be positive when the freeze badge icon is set")
 	}
 	return nil
 }

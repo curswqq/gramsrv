@@ -86,6 +86,16 @@ func (r *Router) dispatchAccountFreezeNotification(ctx context.Context, svc acco
 	}
 	if !found {
 		user = domain.User{ID: notification.FrozenUserID, Deleted: true}
+	} else {
+		user, _, err = r.authoritativeFrozenUserProjection(ctx, notification.TargetUserID, user)
+		if err != nil {
+			r.log.Warn("apply authoritative frozen user projection for notification failed",
+				zap.Int64("target_user_id", notification.TargetUserID),
+				zap.Int64("frozen_user_id", notification.FrozenUserID),
+				zap.Int64("version", notification.Version),
+				zap.Error(err))
+			return
+		}
 	}
 	pushCtx, pushCancel := context.WithTimeout(ctx, 10*time.Second)
 	r.pushUserUpdates(pushCtx, notification.TargetUserID, &tg.Updates{

@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"time"
 
 	"github.com/iamxvbaba/td/tg"
 
@@ -342,6 +343,44 @@ func tgConnectedBot(in domain.ConnectedBusinessBot) tg.ConnectedBot {
 	}
 }
 
+func businessWorkHoursOpenNow(in *domain.BusinessWorkHours, now time.Time) bool {
+	if in == nil || len(in.WeeklyOpen) == 0 {
+		return false
+	}
+	location, err := time.LoadLocation(in.TimezoneID)
+	if err != nil {
+		return false
+	}
+	local := now.In(location)
+	weekday := (int(local.Weekday()) + 6) % 7 // Telegram weeks start on Monday.
+	minute := weekday*24*60 + local.Hour()*60 + local.Minute()
+	for _, interval := range in.WeeklyOpen {
+		if (minute >= interval.StartMinute && minute < interval.EndMinute) ||
+			(minute+7*24*60 >= interval.StartMinute && minute+7*24*60 < interval.EndMinute) {
+			return true
+		}
+	}
+	return false
+}
+
+func tgBotBusinessConnection(in domain.ConnectedBusinessBot, dcID int, disabled bool) tg.BotBusinessConnection {
+	if dcID <= 0 {
+		dcID = 2
+	}
+	out := tg.BotBusinessConnection{
+		ConnectionID: in.ConnectionID,
+		UserID:       in.OwnerUserID,
+		DCID:         dcID,
+		Date:         int(in.CreatedAtUnix),
+	}
+	if disabled {
+		out.SetDisabled(true)
+	} else {
+		out.SetRights(tgBusinessBotRights(in.Rights))
+	}
+	return out
+}
+
 func domainBusinessAwaySchedule(in tg.BusinessAwayMessageScheduleClass) (domain.BusinessAwaySchedule, error) {
 	switch schedule := in.(type) {
 	case *tg.BusinessAwayMessageScheduleAlways:
@@ -410,6 +449,13 @@ func tgQuickReply(in domain.QuickReply) tg.QuickReply {
 func tgQuickReplies(in []domain.QuickReply) []tg.QuickReply {
 	out := make([]tg.QuickReply, 0, len(in))
 	for _, item := range in {
+		// Telegram clients convert top_message into their shortcut-local ID
+		// namespace without accepting zero or local IDs. An empty/corrupt
+		// shortcut must never cross the TL boundary (TDesktop asserts in
+		// data_shortcut_messages.cpp otherwise).
+		if item.ID <= 0 || item.TopMessage <= 0 || item.Count <= 0 {
+			continue
+		}
 		out = append(out, tgQuickReply(item))
 	}
 	return out
@@ -427,6 +473,9 @@ func tgQuickReplyMessage(in domain.QuickReplyMessage) tg.MessageClass {
 		Date:     in.Date,
 		Message:  in.Message,
 		Entities: tgMessageEntities(in.Entities),
+	}
+	if !in.Media.IsZero() {
+		out.Media = tgMessageMedia(in.Media)
 	}
 	out.SetQuickReplyShortcutID(in.ShortcutID)
 	return out

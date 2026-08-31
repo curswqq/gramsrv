@@ -300,11 +300,28 @@ func (r *Router) onPaymentsGetStarsStatus(ctx context.Context, req *tg.PaymentsG
 	if r.deps.Stars == nil {
 		return emptyStarsStatus(&tg.StarsAmount{}), nil
 	}
-	bal, err := r.deps.Stars.GetBalance(ctx, userID)
+	// Official iOS opens the Stars screen through getStarsStatus and expects
+	// the initial ledger page in that response. Other clients may subsequently
+	// continue with getStarsTransactions. Returning only the balance leaves the
+	// iOS history section empty even though the ledger itself is populated.
+	page, err := r.deps.Stars.ListTransactions(ctx, userID, domain.StarsTransactionQuery{
+		Limit:     5,
+		Direction: domain.StarsTransactionDirectionAll,
+	})
 	if err != nil {
 		return nil, starsErr(err)
 	}
-	return emptyStarsStatus(&tg.StarsAmount{Amount: bal.Balance}), nil
+	out := emptyStarsStatus(&tg.StarsAmount{Amount: page.Balance})
+	if txns := tgStarsTransactions(page.Transactions); len(txns) > 0 {
+		out.SetHistory(txns)
+	}
+	if page.NextOffset != "" {
+		out.SetNextOffset(page.NextOffset)
+	}
+	if ids := starsTransactionUserIDs(page.Transactions); len(ids) > 0 {
+		out.Users = tgUsersForViewer(userID, r.domainUsersForIDs(ctx, userID, ids))
+	}
+	return out, nil
 }
 
 // onPaymentsGetStarsSubscriptions returns the authoritative current balance

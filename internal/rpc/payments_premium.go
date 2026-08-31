@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
-	"strconv"
 
 	"github.com/iamxvbaba/td/tg"
 	"github.com/iamxvbaba/td/tgerr"
@@ -42,20 +40,25 @@ func (r *Router) onPaymentsGetPremiumGiftCodeOptions(
 	if err != nil {
 		return nil, internalErr()
 	}
+	// DrKLO's GiftSheet treats XTR options as companion prices for a base
+	// (invoice/store) option. Returning XTR-only options makes the Android
+	// self-gift sheet continuously reload the catalog and eventually crash.
+	// Keep the paired catalog shape even when test checkout is disabled below;
+	// all InputInvoicePremiumGiftCode payment entry points still reject payment.
 	out := make([]tg.PremiumGiftCodeOption, 0, len(plans)*2)
 	for _, plan := range plans {
 		if !plan.Valid() || !plan.Enabled {
 			continue
 		}
-		fiat := tg.PremiumGiftCodeOption{
+		base := tg.PremiumGiftCodeOption{
 			Users: 1, Months: plan.Months,
 			Currency: plan.EffectiveFiatCurrency(), Amount: plan.EffectiveFiatAmount(),
 		}
 		if plan.StoreProduct != "" {
-			fiat.SetStoreProduct(plan.StoreProduct)
-			fiat.SetStoreQuantity(plan.StoreQuantity)
+			base.SetStoreProduct(plan.StoreProduct)
+			base.SetStoreQuantity(plan.StoreQuantity)
 		}
-		out = append(out, fiat, tg.PremiumGiftCodeOption{
+		out = append(out, base, tg.PremiumGiftCodeOption{
 			Users:    1,
 			Months:   plan.Months,
 			Currency: domain.PremiumCurrencyStars,
@@ -127,17 +130,10 @@ func (r *Router) premiumPaymentForm(
 			Users: tgUsersForViewer(userID, users),
 		}, nil
 	}
-	users = append(users, domain.OfficialSystemUser())
-	wireInvoice.Test = true
-	return &tg.PaymentsPaymentForm{
-		FormID: form.ID, BotID: botID, Title: invoice.Title,
-		Description: invoice.Description, Invoice: wireInvoice,
-		ProviderID: domain.OfficialSystemUserID,
-		URL: r.publicLinkQuery("payments/dev-stars", url.Values{
-			"form_id": []string{strconv.FormatInt(form.ID, 10)},
-		}),
-		Users: tgUsersForViewer(userID, users),
-	}, nil
+	// Premium may only be purchased through the real XTR flow implemented by
+	// sendStarsForm. Never expose the local development provider as a payment
+	// method: its credentials do not represent an external charge.
+	return nil, premiumTestPaymentDisabledErr()
 }
 
 func premiumPaymentFormIdempotencyKey(userID, botID int64, input tg.InputInvoiceClass) string {
@@ -205,60 +201,8 @@ func (r *Router) resolvePremiumInvoice(
 ) (domain.PremiumInvoice, error) {
 	switch invoice := input.(type) {
 	case *tg.InputInvoicePremiumGiftCode:
-		if invoice == nil || r.deps.Premium == nil {
-			return domain.PremiumInvoice{}, tgerr.New(400, "PREMIUM_GIFT_CODE_INVALID")
-		}
-		purpose, ok := invoice.Purpose.(*tg.InputStorePaymentPremiumGiftCode)
-		if !ok || purpose == nil || purpose.BoostPeer != nil || len(purpose.Users) != 1 ||
-			invoice.Option.Users != 1 || invoice.Option.Months <= 0 {
-			return domain.PremiumInvoice{}, tgerr.New(400, "PREMIUM_GIFT_CODE_INVALID")
-		}
-		recipient, found, err := r.userFromInput(ctx, userID, purpose.Users[0])
-		if err != nil {
-			return domain.PremiumInvoice{}, internalErr()
-		}
-		if !found || recipient.ID <= 0 || recipient.ID == userID || recipient.Bot ||
-			recipient.Deleted || domain.IsSystemUserID(recipient.ID) {
-			if recipient.ID == userID {
-				return domain.PremiumInvoice{}, tgerr.New(400, "PREMIUM_GIFT_SELF_INVALID")
-			}
-			return domain.PremiumInvoice{}, userIDInvalidErr()
-		}
-		if err := r.rejectActivePremiumGiftRecipient(recipient); err != nil {
-			return domain.PremiumInvoice{}, err
-		}
-		if restricted, err := r.premiumGiftsRestricted(ctx, recipient.ID); err != nil {
-			return domain.PremiumInvoice{}, internalErr()
-		} else if restricted {
-			return domain.PremiumInvoice{}, tgerr.New(403, "USER_PRIVACY_RESTRICTED")
-		}
-		plan, err := r.deps.Premium.Plan(ctx, invoice.Option.Months)
-		if err != nil {
-			return domain.PremiumInvoice{}, premiumPaymentErr(err)
-		}
-		storeProduct, _ := invoice.Option.GetStoreProduct()
-		storeQuantity, _ := invoice.Option.GetStoreQuantity()
-		if purpose.Currency != plan.EffectiveFiatCurrency() || purpose.Amount != plan.EffectiveFiatAmount() ||
-			invoice.Option.Currency != purpose.Currency || invoice.Option.Amount != purpose.Amount ||
-			storeProduct != plan.StoreProduct || storeQuantity != plan.StoreQuantity {
-			return domain.PremiumInvoice{}, starsFormAmountMismatchErr()
-		}
-		message := domain.PremiumGiftMessage{}
-		if text, ok := purpose.GetMessage(); ok {
-			if len([]rune(text.Text)) > domain.MaxPremiumGiftMessageRunes {
-				return domain.PremiumInvoice{}, messageTooLongErr()
-			}
-			message.Text = text.Text
-			message.Entities = domainMessageEntitiesForViewer(userID, text.Entities)
-			if len(message.Entities) != len(text.Entities) || !message.Valid() {
-				return domain.PremiumInvoice{}, entityBoundsInvalidErr()
-			}
-		}
-		out := premiumInvoiceFromPlan(domain.PremiumPurchaseGift, recipient.ID, plan, message)
-		out.PaymentCurrency = plan.EffectiveFiatCurrency()
-		out.PaymentAmount = plan.EffectiveFiatAmount()
-		out.DebitStars = false
-		return out, nil
+		_ = invoice
+		return domain.PremiumInvoice{}, premiumTestPaymentDisabledErr()
 
 	case *tg.InputInvoicePremiumGiftStars:
 		if invoice == nil || invoice.Months <= 0 {
@@ -389,6 +333,8 @@ func (r *Router) resolvePremiumInvoice(
 		return domain.PremiumInvoice{}, notImplementedErr()
 	}
 }
+
+func premiumTestPaymentDisabledErr() error { return tgerr.New(400, "PREMIUM_PURCHASE_BLOCKED") }
 
 func nativePremiumSubscriptionPlan(plans []domain.PremiumPlan, upgrade bool) (domain.PremiumPlan, bool) {
 	var selected domain.PremiumPlan

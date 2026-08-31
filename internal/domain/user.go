@@ -110,6 +110,11 @@ type User struct {
 	// They are produced after loading the viewer-independent base user and must
 	// never be persisted in users or the base-user cache.
 	RestrictionReasons []UserRestrictionReason
+	// PublicFrozen is a transient, viewer-scoped deleted-style projection. It
+	// must never be persisted: the durable account remains intact so an
+	// accepted appeal can restore it without reconstructing profile data.
+	PublicFrozen              bool
+	FrozenBadgeIconDocumentID int64
 	// ContactNote/ContactNoteEntities are transient viewer-scoped contact
 	// projection fields. They must never be persisted into users or a
 	// viewer-independent base-user cache.
@@ -206,6 +211,16 @@ func (u User) EmojiStatus() UserEmojiStatus {
 func (u User) DeletedTombstone() User {
 	if !u.Deleted {
 		return u
+	}
+	if u.PublicFrozen {
+		return User{
+			ID:                        u.ID,
+			AccessHash:                u.AccessHash,
+			Deleted:                   true,
+			PublicFrozen:              true,
+			FrozenBadgeIconDocumentID: u.FrozenBadgeIconDocumentID,
+			Status:                    UserStatus{Kind: UserStatusEmpty},
+		}
 	}
 	return User{
 		ID:              u.ID,

@@ -2,6 +2,8 @@ package rpc
 
 import (
 	"context"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -212,12 +214,31 @@ func (r *Router) onHelpGetPremiumPromo(ctx context.Context) (*tg.HelpPremiumProm
 	}
 	if r.deps.Premium != nil {
 		username := strings.TrimPrefix(r.deps.Premium.BotUsername(), "@")
-		// premiumSubscriptionOption.currency is an ISO 4217 fiat currency. XTR
-		// belongs to invoice/payment forms and is not valid here; advertising it
-		// made official clients render duplicate Star glyphs and missing-symbol
-		// boxes. This deployment is Stars-only, so the promo page deliberately
-		// leaves period_options empty and follows the documented
-		// premium_bot_username flow. The bot renders the live Stars catalog.
+		plans, err := r.deps.Premium.Plans(ctx)
+		if err != nil {
+			return nil, internalErr()
+		}
+		for _, plan := range plans {
+			if !plan.Valid() || !plan.Enabled {
+				continue
+			}
+			// premiumSubscriptionOption uses an ISO 4217 fiat display price.
+			// Settlement remains Stars-backed: when no matching App Store product
+			// exists, official iOS follows this per-plan bot URL and @premiumbot
+			// creates the authoritative XTR invoice for the selected plan.
+			option := tg.PremiumSubscriptionOption{
+				Months:   plan.Months,
+				Currency: plan.EffectiveFiatCurrency(),
+				Amount:   plan.EffectiveFiatAmount(),
+				BotURL: r.appLinks.BuildUsername(username, url.Values{
+					"start": {"buy_" + strconv.Itoa(plan.Months)},
+				}),
+			}
+			if plan.StoreProduct != "" {
+				option.SetStoreProduct(plan.StoreProduct)
+			}
+			promo.PeriodOptions = append(promo.PeriodOptions, option)
+		}
 		botID := r.deps.Premium.BotUserID()
 		botUsers := r.domainUsersForIDs(ctx, userID, []int64{botID})
 		if len(botUsers) == 0 && botID == domain.PremiumBotConfiguredUserID() {

@@ -44,10 +44,11 @@ func TestHelpGetPremiumPromoReturnsSeededCatalogAcrossExactProfiles(t *testing.T
 		PremiumUntil: int(now.Add(48 * time.Hour).Unix()),
 	}
 	catalog := premiumPromoRPCTestCatalog()
-	premium := &fakePremiumRPCService{plans: []domain.PremiumPlan{{
-		Months: 3, DurationDays: 90, AmountStars: 750, Enabled: true,
-		SortOrder: 10, Label: "3 months", Version: 1,
-	}}}
+	premium := &fakePremiumRPCService{plans: []domain.PremiumPlan{
+		{Months: 3, DurationDays: 90, AmountStars: 750, FiatCurrency: "USD", FiatAmount: 750, Enabled: true, SortOrder: 10, Label: "3 months", Version: 1},
+		{Months: 6, DurationDays: 180, AmountStars: 1300, FiatCurrency: "USD", FiatAmount: 1300, Enabled: true, SortOrder: 20, Label: "6 months", Version: 1},
+		{Months: 12, DurationDays: 365, AmountStars: 2400, FiatCurrency: "USD", FiatAmount: 2400, Enabled: true, SortOrder: 30, Label: "12 months", Version: 1},
+	}}
 	r := New(Config{}, Deps{
 		Users:        staticUsersService{user: user},
 		PremiumPromo: staticPremiumPromoService{catalog: catalog, found: true},
@@ -79,11 +80,18 @@ func TestHelpGetPremiumPromoReturnsSeededCatalogAcrossExactProfiles(t *testing.T
 			if !ok || thumb.Type != "m" || thumb.Size != 1234 {
 				t.Fatalf("thumb = %#v", doc.Thumbs[0])
 			}
-			// premiumSubscriptionOption.currency is ISO 4217 fiat, not XTR.
-			// Stars-only deployments advertise @premiumbot through app config
-			// and keep this vector empty so clients do not render broken glyphs.
-			if len(promo.PeriodOptions) != 0 {
-				t.Fatalf("period options = %+v, want no invalid XTR fiat entries", promo.PeriodOptions)
+			if len(promo.PeriodOptions) != 3 {
+				t.Fatalf("period options = %+v, want all three enabled plans", promo.PeriodOptions)
+			}
+			for i, want := range []struct {
+				months int
+				amount int64
+			}{{3, 750}, {6, 1300}, {12, 2400}} {
+				option := promo.PeriodOptions[i]
+				if option.Months != want.months || option.Currency != "USD" || option.Amount != want.amount ||
+					!strings.Contains(option.BotURL, "domain=premiumbot") || !strings.Contains(option.BotURL, fmt.Sprintf("start=buy_%d", want.months)) {
+					t.Fatalf("period option %d = %+v, want fiat display data and buy_%d bot route", i, option, want.months)
+				}
 			}
 			if len(promo.Users) != 1 {
 				t.Fatalf("promo users = %d, want @premiumbot", len(promo.Users))

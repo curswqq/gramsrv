@@ -219,6 +219,16 @@ INSERT INTO stars_transactions (user_id, amount, reason, date)
 VALUES ($1, 1500, 'gift', 0), ($1, 500, 'reaction', 0), ($1, -400, 'purchase', 0)`, userID); err != nil {
 		t.Fatalf("seed stars: %v", err)
 	}
+	// A declined collectible offer writes a reservation debit and a refund
+	// credit. Neither side is economic activity for rating purposes. This is the
+	// regression for "large cancelled offer, then an ordinary gift" inflating the
+	// buyer's next recompute.
+	if _, err := pool.Exec(ctx, `
+INSERT INTO stars_transactions (user_id, peer_type, peer_id, amount, reason, title, date)
+VALUES ($1, 'user', $2, -35000, 'gift_offer', 'Collectible gift offer', 10),
+       ($1, 'user', $2,  35000, 'gift_offer', 'Gift offer refund', 11)`, userID, userID+1); err != nil {
+		t.Fatalf("seed declined gift offer ledger: %v", err)
+	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM stars_transactions WHERE user_id = $1`, userID)
 	})
