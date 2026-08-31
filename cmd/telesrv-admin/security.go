@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -210,3 +212,116 @@ func permissionsFromContext(ctx context.Context) panelPermissions {
 	}
 	return panelPermissions{}
 }
+
+func isRequestSecure(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if r.TLS != nil {
+		return true
+	}
+	proto := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")))
+	return proto == "https"
+}
+
+// securityHeadersMiddleware adds protective HTTP security headers to all responses.
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none';")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// loginRateLimiter tracks and limits failed login attempts per remote IP to prevent brute-force attacks.
+type loginRateLimiter struct {
+	mu       sync.Mutex
+	attempts map[string]*ipLoginState
+}
+
+type ipLoginState struct {
+	failedCount int
+	firstFailed time.Time
+	lockoutTime time.Time
+}
+
+func newLoginRateLimiter() *loginRateLimiter {
+	return &loginRateLimiter{
+		attempts: make(map[string]*ipLoginState),
+	}
+}
+
+func clientIP(r *http.Request) string {
+	if r == nil {
+		return "unknown"
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
+		return strings.TrimSpace(xrip)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+func (l *loginRateLimiter) allow(ip string, now time.Time) (bool, time.Duration) {
+	if l == nil {
+		return true, 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	state, ok := l.attempts[ip]
+	if !ok {
+		return true, 0
+	}
+	if now.Before(state.lockoutTime) {
+		return false, state.lockoutTime.Sub(now)
+	}
+	if now.Sub(state.firstFailed) > 5*time.Minute {
+		delete(l.attempts, ip)
+		return true, 0
+	}
+	return true, 0
+}
+
+func (l *loginRateLimiter) recordFailure(ip string, now time.Time) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	state, ok := l.attempts[ip]
+	if !ok || now.Sub(state.firstFailed) > 5*time.Minute {
+		l.attempts[ip] = &ipLoginState{
+			failedCount: 1,
+			firstFailed: now,
+		}
+		return
+	}
+	state.failedCount++
+	if state.failedCount >= 5 {
+		// Lock out for 1 minute after 5 consecutive failures in 5 minutes
+		state.lockoutTime = now.Add(1 * time.Minute)
+	}
+}
+
+func (l *loginRateLimiter) recordSuccess(ip string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.attempts, ip)
+}
+

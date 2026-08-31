@@ -26,11 +26,12 @@ import (
 var webDist embed.FS
 
 type server struct {
-	cfg       uiConfig
-	read      *readStore
-	hostStats *hoststats.Poller
-	web       fs.FS
-	webServer http.Handler
+	cfg          uiConfig
+	read         *readStore
+	hostStats    *hoststats.Poller
+	loginLimiter *loginRateLimiter
+	web          fs.FS
+	webServer    http.Handler
 }
 
 func newServer(cfg uiConfig, read *readStore, hostStats *hoststats.Poller) (*server, error) {
@@ -39,11 +40,12 @@ func newServer(cfg uiConfig, read *readStore, hostStats *hoststats.Poller) (*ser
 		return nil, err
 	}
 	return &server{
-		cfg:       cfg,
-		read:      read,
-		hostStats: hostStats,
-		web:       web,
-		webServer: http.FileServer(http.FS(web)),
+		cfg:          cfg,
+		read:         read,
+		hostStats:    hostStats,
+		loginLimiter: newLoginRateLimiter(),
+		web:          web,
+		webServer:    http.FileServer(http.FS(web)),
 	}, nil
 }
 
@@ -188,7 +190,7 @@ func (s *server) routes() http.Handler {
 		writeAPIError(w, http.StatusNotFound, "api route not found")
 	})
 	mux.HandleFunc("/", s.handleApp)
-	return mux
+	return securityHeadersMiddleware(mux)
 }
 
 func (s *server) handleStorageStatsAPI(w http.ResponseWriter, r *http.Request) {
@@ -267,15 +269,23 @@ func (s *server) handleAPILogin(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusForbidden, "origin is not allowed")
 		return
 	}
+	ip := clientIP(r)
+	now := time.Now()
+	if allowed, remaining := s.loginLimiter.allow(ip, now); !allowed {
+		writeAPIError(w, http.StatusTooManyRequests, fmt.Sprintf("too many failed login attempts; try again in %d seconds", int(remaining.Seconds())+1))
+		return
+	}
 	var req loginRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if !s.validSecret(req.Secret) {
+		s.loginLimiter.recordFailure(ip, now)
 		writeAPIError(w, http.StatusUnauthorized, "invalid credential")
 		return
 	}
+	s.loginLimiter.recordSuccess(ip)
 	csrfToken, err := newCSRFToken()
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, err.Error())
@@ -293,15 +303,17 @@ func (s *server) handleAPILogin(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	secure := isRequestSecure(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    value,
 		Path:     "/",
 		MaxAge:   int(sessionTTL.Seconds()),
 		HttpOnly: true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
-	setCSRFCookie(w, csrfToken, sessionTTL)
+	setCSRFCookie(w, csrfToken, sessionTTL, secure)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"actor":       "admin",
 		"permissions": permissions.List(),
