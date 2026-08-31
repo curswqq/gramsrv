@@ -456,10 +456,12 @@ SELECT c.gift_id, r.id, r.revision, r.title, r.stars, r.convert_stars,
        (SELECT COUNT(*) FROM peer_star_gifts p WHERE p.gift_id = c.gift_id),
        COALESCE(cr.upgrade_stars, 0), COALESCE(cr.supply_total, 0), COALESCE(cr.issued, 0),
        COALESCE(a.status = 'active', false), COALESCE(a.slug, ''), COALESCE(a.start_date, 0), COALESCE(a.gifts_per_round, 0),
+       r.created_by, c.updated_at
 FROM star_gift_catalog c
 JOIN star_gift_catalog_revisions r ON r.id = c.active_revision_id
 LEFT JOIN star_gift_collectible_revisions cr ON cr.id = c.collectible_revision_id AND cr.status = 'published'
 LEFT JOIN star_gift_auctions a ON a.gift_id = c.gift_id AND a.status IN ('active', 'pending')
+JOIN documents d ON d.id = r.document_id
 ORDER BY c.sort_order, c.gift_id
 LIMIT $1`, domain.MaxStarGiftCatalogSize)
 	if err != nil {
