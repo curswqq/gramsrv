@@ -1011,10 +1011,7 @@ func (s *StarGiftLifecycleStore) BidStarGiftAuction(ctx context.Context, req dom
 		if oldActive && req.BidAmount <= oldAmount {
 			return domain.ErrStarGiftAuctionUnavailable
 		}
-		if !oldActive && req.BidAmount < minimum {
-			return domain.ErrStarGiftAuctionUnavailable
-		}
-		reserved := int64(0)
+		var reserved int64
 		if oldActive {
 			reserved = oldAmount
 		}
@@ -1031,13 +1028,11 @@ ON CONFLICT(gift_id,bidder_user_id) DO UPDATE SET
 recipient_peer_type=EXCLUDED.recipient_peer_type,
 recipient_peer_id=EXCLUDED.recipient_peer_id,
 amount=EXCLUDED.amount,bid_date=EXCLUDED.bid_date,
-hide_name=EXCLUDED.hide_name,
-message=EXCLUDED.message,
 returned=false,active=true,version=star_gift_auction_bids.version+1`,
 			req.GiftID, req.UserID, string(req.Peer.Type), req.Peer.ID, req.BidAmount, req.Date, req.HideName, req.Message); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO star_gift_auction_bid_payments(user_id,form_id,gift_id,bid_amount,balance_after,created_at)
+		if _, err := tx.Exec(ctx, `INSERT INTO star_gift_auction_bid_commands(user_id,form_id,gift_id,bid_amount,balance_after,created_at)
 VALUES($1,$2,$3,$4,$5,$6)`, req.UserID, req.FormID, req.GiftID, req.BidAmount, balance.Balance, req.Date); err != nil {
 			return err
 		}

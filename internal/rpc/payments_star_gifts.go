@@ -1138,6 +1138,14 @@ func (r *Router) onPaymentsGetSavedStarGifts(ctx context.Context, req *tg.Paymen
 	if r.deps.Gifts == nil {
 		return emptySavedStarGifts(), nil
 	}
+	if owner.Type == domain.PeerTypeUser && owner.ID != userID && r.deps.Users != nil {
+		if target, found, err := r.deps.Users.ByID(ctx, userID, owner.ID); err == nil && found {
+			target, publicFrozen, _ := r.authoritativeFrozenUserProjection(ctx, userID, target)
+			if target.Deleted || publicFrozen {
+				return emptySavedStarGifts(), nil
+			}
+		}
+	}
 	// Gifts hidden from the profile (unsaved) are visible only to the owner (or a
 	// channel admin). Never trust the client's exclude_unsaved flag for other
 	// viewers: force-exclude hidden gifts unless the requester manages the owner.

@@ -264,7 +264,6 @@ func (r *Router) frozenAccountUserFull(ctx context.Context, u domain.User) tg.Us
 	}
 	full := tg.UserFull{
 		ID:             u.ID,
-		About:          description,
 		Settings:       tg.PeerSettings{},
 		NotifySettings: *tdesktop.NotifySettings(),
 	}

@@ -76,9 +76,16 @@ func tgUser(u domain.User) *tg.User {
 }
 
 func tgDeletedStyleUser(u domain.User) *tg.User {
-	out := &tg.User{ID: u.ID, Deleted: true}
-	if u.PublicFrozen && u.FrozenBadgeIconDocumentID > 0 {
-		out.SetBotVerificationIcon(u.FrozenBadgeIconDocumentID)
+	out := &tg.User{
+		ID:      u.ID,
+		Deleted: true,
+	}
+	if u.PublicFrozen {
+		out.AccessHash = u.AccessHash
+		applyTgUserRestrictionFields(out, u)
+		if u.FrozenBadgeIconDocumentID > 0 {
+			out.SetBotVerificationIcon(u.FrozenBadgeIconDocumentID)
+		}
 	}
 	return out
 }

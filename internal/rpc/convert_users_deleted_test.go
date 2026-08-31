@@ -55,7 +55,7 @@ func TestFrozenUserFullIsMinimalLocalizedAndAttributed(t *testing.T) {
 	if !ok || mark.BotID != 1250000013 || mark.Icon != 8800001 || mark.Description != "Аккаунт заморожен." {
 		t.Fatalf("frozen userFull mark = %+v ok=%v", mark, ok)
 	}
-	if full.About != "Аккаунт заморожен." || full.StargiftsCount != 0 || full.ProfilePhoto != nil || full.PersonalPhoto != nil || full.FallbackPhoto != nil {
+	if full.About != "" || full.StargiftsCount != 0 || full.ProfilePhoto != nil || full.PersonalPhoto != nil || full.FallbackPhoto != nil {
 		t.Fatalf("frozen userFull leaked state: %+v", full)
 	}
 }
@@ -82,7 +82,7 @@ func TestGetFullUserUsesFrozenProjectionWithoutCachedProfileLeak(t *testing.T) {
 		t.Fatalf("frozen peer user leaked state: %+v", gotUser)
 	}
 	mark, ok := res.FullUser.GetBotVerification()
-	if !ok || mark.Icon != 8800001 || mark.Description != "The account was frozen." || res.FullUser.About != "The account was frozen." || res.FullUser.ProfilePhoto != nil {
+	if !ok || mark.Icon != 8800001 || mark.Description != "The account was frozen." || res.FullUser.About != "" || res.FullUser.ProfilePhoto != nil {
 		t.Fatalf("frozen full projection = %+v mark=%+v ok=%v", res.FullUser, mark, ok)
 	}
 }
@@ -107,7 +107,7 @@ func TestGetFullUserRechecksDurableFreezeWhenUserProjectionIsStale(t *testing.T)
 	if !gotUser.Deleted || !iconOK || icon != 8800001 || gotUser.FirstName != "" || gotUser.Photo != nil {
 		t.Fatalf("authoritative frozen user = %+v icon=%d ok=%v", gotUser, icon, iconOK)
 	}
-	if !markOK || mark.Icon != 8800001 || mark.Description != "Аккаунт заморожен." || res.FullUser.About != "Аккаунт заморожен." {
+	if !markOK || mark.Icon != 8800001 || mark.Description != "Аккаунт заморожен." || res.FullUser.About != "" {
 		t.Fatalf("authoritative frozen full = %+v mark=%+v ok=%v", res.FullUser, mark, markOK)
 	}
 }

@@ -98,9 +98,11 @@ func (r *Router) applyAuthoritativeAccountFreezesToResponses(ctx context.Context
 			}
 			projected := tgDeletedStyleUser(domain.User{
 				ID:                        user.ID,
+				AccessHash:                user.AccessHash,
 				Deleted:                   true,
 				PublicFrozen:              true,
 				FrozenBadgeIconDocumentID: freeze.BadgeIconDocumentID,
+				RestrictionReasons:        domain.AccountFrozenRestrictionReasons(),
 			})
 			*user = *projected
 		}

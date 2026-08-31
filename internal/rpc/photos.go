@@ -441,6 +441,10 @@ func (r *Router) onPhotosGetUserPhotos(ctx context.Context, req *tg.PhotosGetUse
 	if !found {
 		return nil, userIDInvalidErr()
 	}
+	target, publicFrozen, _ := r.authoritativeFrozenUserProjection(ctx, currentUserID, target)
+	if target.Deleted || publicFrozen {
+		return &tg.PhotosPhotos{Photos: []tg.PhotoClass{}, Users: []tg.UserClass{r.tgUser(target)}}, nil
+	}
 	offset := req.Offset
 	if offset < -1 {
 		offset = -1
