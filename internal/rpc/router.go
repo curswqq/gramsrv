@@ -826,6 +826,9 @@ func (r *Router) rememberClientInfo(ctx context.Context, info ClientInfo) {
 }
 
 func (r *Router) rememberClientInfoAt(ctx context.Context, info ClientInfo, admissionSeq uint64) {
+	if info.IP == "" {
+		info.IP = ClientIPFrom(ctx)
+	}
 	info = normalizeClientInfo(info)
 	rawAuthKeyID, hasRawAuthKeyID := RawAuthKeyIDFrom(ctx)
 	sessionID, hasSessionID := SessionIDFrom(ctx)
@@ -1016,7 +1019,7 @@ func (r *Router) persistAuthKeyClientInfo(ctx context.Context, info clientSessio
 	}
 	domainInfo := domainAuthKeyClientInfo(info)
 	if domainInfo.Layer == 0 && domainInfo.DeviceModel == "" && domainInfo.Platform == "" &&
-		domainInfo.SystemVersion == "" && domainInfo.APIID == 0 && domainInfo.AppVersion == "" {
+		domainInfo.SystemVersion == "" && domainInfo.APIID == 0 && domainInfo.AppVersion == "" && domainInfo.IP == "" {
 		return
 	}
 	seen := make(map[[8]byte]struct{}, 2)
@@ -1717,6 +1720,7 @@ func domainAuthKeyClientInfo(info clientSessionInfo) domain.AuthKeyClientInfo {
 		out.SystemVersion = info.clientInfo.SystemVersion
 		out.AppVersion = info.clientInfo.AppVersion
 		out.Platform = string(info.clientInfo.ClientType())
+		out.IP = info.clientInfo.IP
 	}
 	return out
 }
@@ -1753,6 +1757,7 @@ func clientSessionInfoFromAuthorizationRecord(item domain.Authorization) clientS
 			SystemVersion: item.SystemVersion,
 			AppVersion:    item.AppVersion,
 			Type:          ClientType(item.Platform),
+			IP:            item.IP,
 		},
 	}
 	// authorizations.layer is only a materialized device-list projection.

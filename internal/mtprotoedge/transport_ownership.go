@@ -24,7 +24,8 @@ const (
 // the critical property: when transfer wins, a stale generation can no longer
 // close the socket; when close wins, no later generation can be published.
 type physicalTransportOwner struct {
-	raw transport.Conn
+	raw    transport.Conn
+	remote string
 
 	// writeMu orders a completed send before generation transfer. CloseAny and
 	// owner-close deliberately do not wait for it: raw.Close must be able to
@@ -49,17 +50,23 @@ type physicalTransportOwner struct {
 type physicalTransportLease struct {
 	owner      *physicalTransportOwner
 	generation uint64
+	remote     string
 }
 
 var _ transport.Conn = (*physicalTransportLease)(nil)
 
-func newPhysicalTransportOwner(raw transport.Conn) (*physicalTransportOwner, *physicalTransportLease) {
+func newPhysicalTransportOwner(raw transport.Conn, remote ...string) (*physicalTransportOwner, *physicalTransportLease) {
+	var r string
+	if len(remote) > 0 {
+		r = remote[0]
+	}
 	owner := &physicalTransportOwner{
 		raw:       raw,
+		remote:    r,
 		closeDone: make(chan struct{}),
 	}
 	owner.state.Store(1)
-	return owner, &physicalTransportLease{owner: owner, generation: 1}
+	return owner, &physicalTransportLease{owner: owner, generation: 1, remote: r}
 }
 
 // Transfer atomically hands the physical transport to the next logical Conn
@@ -73,16 +80,20 @@ func (l *physicalTransportLease) Transfer() (*physicalTransportLease, bool) {
 	owner := l.owner
 	owner.writeMu.Lock()
 	defer owner.writeMu.Unlock()
-
-	if l.generation >= physicalTransportGenerationMax {
+	current := owner.state.Load()
+	if current != l.generation {
 		return nil, false
 	}
-	if !owner.state.CompareAndSwap(l.generation, l.generation+1) {
+	next := current + 1
+	if next > physicalTransportGenerationMax {
+		return nil, false
+	}
+	if !owner.state.CompareAndSwap(current, next) {
 		return nil, false
 	}
 	owner.bindingMu.Lock()
 	if owner.boundGeneration == l.generation {
-		owner.boundGeneration = l.generation + 1
+		owner.boundGeneration = next
 		owner.boundLogicalConn = nil
 	}
 	owner.bindingMu.Unlock()

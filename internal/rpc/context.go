@@ -16,6 +16,7 @@ type ctxKey int
 const (
 	layerKey ctxKey = iota
 	clientInfoKey
+	clientIPKey
 	rawAuthKeyIDKey
 	authKeyIDKey
 	sessionIDKey
@@ -23,6 +24,16 @@ const (
 	invokeWithoutUpdatesKey
 	inboundRPCBytesKey
 )
+
+// WithClientIP injects the client IP in ctx.
+func WithClientIP(ctx context.Context, ip string) context.Context {
+	return domain.WithClientIP(ctx, ip)
+}
+
+// ClientIPFrom returns the client IP from ctx, or empty string.
+func ClientIPFrom(ctx context.Context) string {
+	return domain.ClientIPFrom(ctx)
+}
 
 func withInboundRPCBytes(ctx context.Context, n int) context.Context {
 	if n < 0 {
@@ -67,6 +78,7 @@ type ClientInfo struct {
 	LangPack       string
 	LangCode       string
 	Type           ClientType
+	IP             string
 	// typeResolved distinguishes current-connection classification from raw
 	// metadata restored from storage. A persisted unknown remains unknown until
 	// a fresh initConnection supplies authoritative wire evidence.
@@ -88,6 +100,9 @@ func LayerFrom(ctx context.Context) int {
 
 // WithClientInfo 在 ctx 注入客户端信息（来自 initConnection）。
 func WithClientInfo(ctx context.Context, info ClientInfo) context.Context {
+	if info.IP == "" {
+		info.IP = ClientIPFrom(ctx)
+	}
 	info = normalizeClientInfo(info)
 	return context.WithValue(ctx, clientInfoKey, info)
 }
@@ -127,6 +142,7 @@ func normalizeClientInfo(info ClientInfo) ClientInfo {
 	info.SystemLangCode = truncateClientMetadata(info.SystemLangCode, maxClientMetadataRunes)
 	info.LangPack = truncateClientMetadata(info.LangPack, maxClientMetadataRunes)
 	info.LangCode = truncateClientMetadata(info.LangCode, maxClientMetadataRunes)
+	info.IP = truncateClientMetadata(info.IP, maxClientMetadataRunes)
 	info.typeResolved = true
 	return info
 }

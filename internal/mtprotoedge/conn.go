@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -65,6 +66,7 @@ type Conn struct {
 	msgID          *proto.MessageIDGen
 	writeTimeout   time.Duration
 	metrics        Metrics
+	remoteAddr     string
 	// now shares the Server protocol clock with inbound expiry admission. Tests may
 	// advance it without sleeping; construction-only Conns fall back to time.Now.
 	now func() time.Time
@@ -405,3 +407,24 @@ func (c *Conn) ReceivesUpdates() bool { return c.receivesUpdates.Load() }
 // SetReceivesUpdates 设置该连接是否接收主动推送的 updates。
 // 登录后的主连接在 updates.getState/getDifference 建立同步基线后置为 true。
 func (c *Conn) SetReceivesUpdates(v bool) { c.receivesUpdates.Store(v) }
+
+// RemoteAddr returns the remote address string.
+func (c *Conn) RemoteAddr() string {
+	if c == nil {
+		return ""
+	}
+	return c.remoteAddr
+}
+
+// RemoteIP returns the client IP address string (excluding port).
+func (c *Conn) RemoteIP() string {
+	if c == nil || c.remoteAddr == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(c.remoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	return c.remoteAddr
+}
+

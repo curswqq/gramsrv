@@ -8,13 +8,16 @@ import (
 // authzFromCtx 从连接上下文组装一条待绑定的设备授权（UserID 由业务层填充）。
 func (r *Router) authzFromCtx(ctx context.Context) domain.Authorization {
 	id, _ := AuthKeyIDFrom(ctx)
-	a := domain.Authorization{AuthKeyID: id, Layer: LayerFrom(ctx)}
+	a := domain.Authorization{AuthKeyID: id, Layer: LayerFrom(ctx), IP: ClientIPFrom(ctx)}
 	if ci, ok := ClientInfoFrom(ctx); ok {
 		a.DeviceModel = ci.DeviceModel
 		a.Platform = string(ci.ClientType())
 		a.SystemVersion = ci.SystemVersion
 		a.AppVersion = ci.AppVersion
 		a.APIID = ci.APIID
+		if a.IP == "" && ci.IP != "" {
+			a.IP = ci.IP
+		}
 	}
 	return a
 }

@@ -611,7 +611,12 @@ func (s *Server) newConnWithLease(lease *physicalTransportLease, key crypto.Auth
 }
 
 func (s *Server) buildConn(tc transport.Conn, lease *physicalTransportLease, key crypto.AuthKey, sessionID, salt int64) *Conn {
+	var remote string
+	if lease != nil {
+		remote = lease.remote
+	}
 	c := &Conn{
+		remoteAddr:                   remote,
 		transport:                    tc,
 		transportLease:               lease,
 		writer:                       tc,
@@ -917,7 +922,7 @@ func (s *Server) promoteConn(raw net.Conn, obfuscated bool) (transport.Conn, str
 //
 // 连接建立 session 后注册到 SessionManager，结束时注销。
 func (s *Server) serveConn(ctx context.Context, raw transport.Conn, remote, local string) (err error) {
-	transportOwner, conn := newPhysicalTransportOwner(raw)
+	transportOwner, conn := newPhysicalTransportOwner(raw, remote)
 	s.metrics.ConnOpened()
 	s.log.Debug("MTProto connection loop started", zap.String("remote_addr", remote), zap.String("local_addr", local))
 

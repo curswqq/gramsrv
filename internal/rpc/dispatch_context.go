@@ -75,6 +75,16 @@ func (r *Router) prepareRPCDispatchContext(
 			clientMetadataStored = true
 		}
 	}
+	if ip := ClientIPFrom(ctx); ip != "" && hasUserID {
+		if !info.hasClientInfo || info.clientInfo.IP != ip {
+			info.clientInfo.IP = ip
+			info.hasClientInfo = true
+			r.rememberClientSessionInfo(ctx, info)
+			r.persistAuthKeyClientInfo(ctx, info)
+			clientMetadataStored = true
+			hasClientMetadata = true
+		}
+	}
 	if r.log != nil {
 		if tInfo := r.clock.Now(); tInfo.Sub(preStart) > 50*time.Millisecond {
 			r.log.Info("slow pre-handler",

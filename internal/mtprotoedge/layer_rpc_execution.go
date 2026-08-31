@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/iamxvbaba/td/tlprofile"
+	"telesrv/internal/domain"
 	"telesrv/internal/observability/dbtrace"
 	"telesrv/internal/postresponse"
 )
@@ -210,6 +211,9 @@ func (s *Server) handleAdmittedLayerRPC(
 	}
 	ctx = postresponse.WithCallbacks(ctx)
 	ctx, dbStats := dbtrace.WithStats(ctx)
+	if ip := c.RemoteIP(); ip != "" {
+		ctx = domain.WithClientIP(ctx, ip)
+	}
 	start := s.clock.Now()
 	result, effectiveMethod, err := s.layerRPC.DispatchAdmitted(ctx, c.authKeyID, c.sessionID, msgID, admissionSeq, request)
 	businessSucceeded := err == nil

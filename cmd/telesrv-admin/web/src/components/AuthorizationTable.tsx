@@ -42,7 +42,7 @@ export function AuthorizationTable({ rows, userID, onDone }: { rows: Authorizati
               <tr key={row.Hash}>
                 <td className="device-text">{row.DeviceModel} {row.SystemVersion}</td>
                 <td className="device-text">{row.Platform} {row.AppVersion}</td>
-                <td>{row.IP}</td>
+                <td>{row.IP ? <code style={{ fontSize: "0.85rem", opacity: 0.9 }}>{row.IP}</code> : <span className="dim">—</span>}</td>
                 <td>{formatDate(row.ActiveAt)}</td>
                 <td className="device-actions-cell">
                   <div className="device-actions">

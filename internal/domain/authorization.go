@@ -40,4 +40,5 @@ type AuthKeyClientInfo struct {
 	SystemVersion      string
 	APIID              int
 	AppVersion         string
+	IP                 string
 }

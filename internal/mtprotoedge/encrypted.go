@@ -25,6 +25,7 @@ import (
 	"github.com/iamxvbaba/td/transport"
 
 	"github.com/iamxvbaba/td/tlprofile"
+	"telesrv/internal/domain"
 	"telesrv/internal/observability/dbtrace"
 	"telesrv/internal/postresponse"
 	"telesrv/internal/store"
@@ -750,6 +751,9 @@ func (s *Server) handleRPC(ctx context.Context, c *Conn, msgID int64, method str
 
 	ctx = postresponse.WithCallbacks(ctx)
 	ctx, dbStats := dbtrace.WithStats(ctx)
+	if ip := c.RemoteIP(); ip != "" {
+		ctx = domain.WithClientIP(ctx, ip)
+	}
 	// legacyRPC is an unexported package-test hook, but its result still has to
 	// obey the production exact-codec invariant. Admit a defensive copy using
 	// the generated current profile before the legacy router consumes b.

@@ -1,0 +1,1 @@
+-- No-op: keep retained IPs on down migration.
