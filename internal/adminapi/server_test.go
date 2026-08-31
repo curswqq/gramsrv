@@ -790,7 +790,15 @@ func (fakeService) CancelStarGiftAuction(_ context.Context, req admin.CancelStar
 	return admin.CommandResult{CommandID: req.CommandID, Status: "completed", DryRun: req.DryRun}, nil
 }
 
+func (fakeService) CancelStarGiftAuctionBid(_ context.Context, req admin.CancelStarGiftAuctionBidRequest) (admin.CommandResult, error) {
+	return admin.CommandResult{CommandID: req.CommandID, Status: "completed", DryRun: req.DryRun}, nil
+}
+
 func (fakeService) ListStarGiftAuctions(context.Context) ([]domain.StarGiftAuctionAdminRow, error) {
+	return nil, nil
+}
+
+func (fakeService) ListStarGiftAuctionBids(context.Context, int64) ([]domain.StarGiftAuctionBidRow, error) {
 	return nil, nil
 }
 

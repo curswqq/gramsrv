@@ -101,7 +101,9 @@ type StarGiftLifecycleStore interface {
 	BidStarGiftAuction(ctx context.Context, req domain.StarGiftAuctionBidRequest) (domain.StarGiftAuction, domain.StarsBalance, error)
 	CreateStarGiftAuction(ctx context.Context, req domain.StarGiftAuctionCreateRequest) (domain.StarGiftAuction, error)
 	CancelStarGiftAuction(ctx context.Context, giftID int64, now int) error
+	CancelStarGiftAuctionBid(ctx context.Context, giftID, bidderUserID int64, refundStars bool, now int) error
 	ListStarGiftAuctions(ctx context.Context) ([]domain.StarGiftAuctionAdminRow, error)
+	ListStarGiftAuctionBids(ctx context.Context, giftID int64) ([]domain.StarGiftAuctionBidRow, error)
 	PrepaidUpgradeTarget(ctx context.Context, owner domain.Peer, hash string) (domain.SavedStarGift, int64, error)
 	PrepayStarGiftUpgrade(ctx context.Context, req domain.StarGiftPrepaidUpgradeRequest) (domain.StarGiftPrepaidUpgradeResult, error)
 	DropStarGiftOriginalDetails(ctx context.Context, req domain.StarGiftDropOriginalDetailsRequest) (domain.StarGiftDropOriginalDetailsResult, error)

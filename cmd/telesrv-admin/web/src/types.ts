@@ -281,6 +281,26 @@ export type StarGiftAuctionRow = {
 
 export type StarGiftAuctionListResponse = { Auctions: StarGiftAuctionRow[] };
 
+export type StarGiftAuctionBidRow = {
+  GiftID: string;
+  BidderUserID: string;
+  BidderUsername: string;
+  BidderFirstName: string;
+  BidderLastName: string;
+  RecipientPeerType: string;
+  RecipientPeerID: string;
+  Amount: string;
+  BidDate: number;
+  HideName: boolean;
+  Message: string;
+  Returned: boolean;
+  AcquiredCount: number;
+  Active: boolean;
+  Version: string;
+};
+
+export type StarGiftAuctionBidsResponse = { Bids: StarGiftAuctionBidRow[] };
+
 export type OfficialStarGiftRow = {
   source_gift_id: string;
   title: string;

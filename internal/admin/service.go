@@ -58,8 +58,9 @@ const (
 	ActionSetStarGiftEnabled      = "gifts.set_enabled"
 	ActionSetStarGiftSortOrder    = "gifts.set_sort_order"
 	ActionGiveGift                = "gifts.give"
-	ActionCreateStarGiftAuction   = "gifts.auction.create"
-	ActionCancelStarGiftAuction   = "gifts.auction.cancel"
+	ActionCreateStarGiftAuction      = "gifts.auction.create"
+	ActionCancelStarGiftAuction      = "gifts.auction.cancel"
+	ActionCancelStarGiftAuctionBid   = "gifts.auction.bid.cancel"
 	ActionCreateBot               = "bot.create"
 	ActionCreateBroadcast         = "broadcast.create"
 	ActionSetStickerSetArchived   = "stickers.set_archived"
@@ -327,7 +328,9 @@ type GiftsService interface {
 	CollectibleAnimationJSON(ctx context.Context, giftID int64, kind domain.StarGiftCollectibleAttributeKind, attributeID int64) ([]byte, bool, error)
 	CreateAuction(ctx context.Context, req domain.StarGiftAuctionCreateRequest) (domain.StarGiftAuction, error)
 	CancelAuction(ctx context.Context, giftID int64, now int) error
+	CancelAuctionBid(ctx context.Context, giftID, bidderUserID int64, refundStars bool, now int) error
 	ListAuctions(ctx context.Context) ([]domain.StarGiftAuctionAdminRow, error)
+	ListAuctionBids(ctx context.Context, giftID int64) ([]domain.StarGiftAuctionBidRow, error)
 }
 
 type OfficialGiftsSource interface {
@@ -863,6 +866,13 @@ type CreateStarGiftAuctionRequest struct {
 type CancelStarGiftAuctionRequest struct {
 	CommandMeta
 	GiftID int64 `json:"gift_id"`
+}
+
+type CancelStarGiftAuctionBidRequest struct {
+	CommandMeta
+	GiftID       int64 `json:"gift_id"`
+	BidderUserID int64 `json:"bidder_user_id"`
+	RefundStars  bool  `json:"refund_stars"`
 }
 
 type StarGiftCollectibleAnimationUpload struct {
@@ -4093,11 +4103,43 @@ func (s *Service) CancelStarGiftAuction(ctx context.Context, req CancelStarGiftA
 	})
 }
 
+func (s *Service) CancelStarGiftAuctionBid(ctx context.Context, req CancelStarGiftAuctionBidRequest) (CommandResult, error) {
+	if s == nil || s.gifts == nil || req.GiftID <= 0 || req.BidderUserID <= 0 {
+		return CommandResult{}, domain.ErrStarGiftAuctionUnavailable
+	}
+	return s.runCommand(ctx, req.CommandMeta, ActionCancelStarGiftAuctionBid, req.BidderUserID, domain.Peer{Type: domain.PeerTypeUser, ID: req.BidderUserID}, req, func() (CommandResult, error) {
+		details := map[string]any{
+			"gift_id":        strconv.FormatInt(req.GiftID, 10),
+			"bidder_user_id": strconv.FormatInt(req.BidderUserID, 10),
+			"refund_stars":   req.RefundStars,
+		}
+		if req.DryRun {
+			return CommandResult{Message: "star gift auction bid cancellation validated", Details: details}, nil
+		}
+		err := s.gifts.CancelAuctionBid(ctx, req.GiftID, req.BidderUserID, req.RefundStars, int(time.Now().Unix()))
+		if err != nil {
+			return CommandResult{Details: details}, err
+		}
+		msg := "star gift auction bid cancelled"
+		if req.RefundStars {
+			msg = "star gift auction bid cancelled with stars refunded"
+		}
+		return CommandResult{Message: msg, Details: details}, nil
+	})
+}
+
 func (s *Service) ListStarGiftAuctions(ctx context.Context) ([]domain.StarGiftAuctionAdminRow, error) {
 	if s == nil || s.gifts == nil {
 		return nil, domain.ErrStarGiftAuctionUnavailable
 	}
 	return s.gifts.ListAuctions(ctx)
+}
+
+func (s *Service) ListStarGiftAuctionBids(ctx context.Context, giftID int64) ([]domain.StarGiftAuctionBidRow, error) {
+	if s == nil || s.gifts == nil || giftID <= 0 {
+		return nil, domain.ErrStarGiftAuctionUnavailable
+	}
+	return s.gifts.ListAuctionBids(ctx, giftID)
 }
 
 func (s *Service) StarGiftAnimation(ctx context.Context, giftID int64) ([]byte, bool, error) {

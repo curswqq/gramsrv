@@ -1551,7 +1551,13 @@ func (*fakeGiftsService) CreateAuction(context.Context, domain.StarGiftAuctionCr
 func (*fakeGiftsService) CancelAuction(context.Context, int64, int) error {
 	return nil
 }
+func (*fakeGiftsService) CancelAuctionBid(context.Context, int64, int64, bool, int) error {
+	return nil
+}
 func (*fakeGiftsService) ListAuctions(context.Context) ([]domain.StarGiftAuctionAdminRow, error) {
+	return nil, nil
+}
+func (*fakeGiftsService) ListAuctionBids(context.Context, int64) ([]domain.StarGiftAuctionBidRow, error) {
 	return nil, nil
 }
 

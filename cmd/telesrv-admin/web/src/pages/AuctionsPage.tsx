@@ -1,4 +1,4 @@
-import { Ban, CheckCircle2, Clock, Gavel, Loader2, Plus, RefreshCw, Trophy } from "lucide-react";
+import { Ban, CheckCircle2, Clock, Gavel, List, Loader2, Plus, RefreshCw, Trophy } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, errorMessage } from "../api";
 import { ActionButton } from "../components/ActionButton";
@@ -6,6 +6,7 @@ import { Alert, Badge, EmptyRow, Metric, PageFrame } from "../components/ui";
 import { useI18n } from "../i18n";
 import { formatDate } from "../lib/format";
 import type { StarGiftAuctionRow } from "../types";
+import { AuctionBidsModal } from "./AuctionBidsModal";
 import { CreateAuctionModal } from "./CreateAuctionModal";
 import { LottiePreview } from "./GiftsPage";
 
@@ -15,6 +16,7 @@ export function AuctionsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [selectedAuctionForBids, setSelectedAuctionForBids] = useState<StarGiftAuctionRow | null>(null);
   const [filter, setFilter] = useState<"all" | "active" | "pending" | "completed" | "cancelled">("all");
 
   const load = () => {
@@ -174,19 +176,27 @@ export function AuctionsPage() {
                     </div>
                   </td>
                   <td>
-                    {auction.Status === "active" || auction.Status === "pending" ? (
-                      <ActionButton
-                        compact
-                        label={t("auctions.cancel")}
-                        icon={<Ban size={14} />}
-                        tone="danger"
-                        path="/api/actions/cancel-star-gift-auction"
-                        payload={() => ({ gift_id: auction.GiftID })}
-                        onDone={load}
-                      />
-                    ) : (
-                      <span className="dim">—</span>
-                    )}
+                    <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                      <button
+                        className="btn compact"
+                        type="button"
+                        onClick={() => setSelectedAuctionForBids(auction)}
+                      >
+                        <List size={13} />
+                        <span>{t("auctions.viewBids")}</span>
+                      </button>
+                      {auction.Status === "active" || auction.Status === "pending" ? (
+                        <ActionButton
+                          compact
+                          label={t("auctions.cancel")}
+                          icon={<Ban size={14} />}
+                          tone="danger"
+                          path="/api/actions/cancel-star-gift-auction"
+                          payload={() => ({ gift_id: auction.GiftID })}
+                          onDone={load}
+                        />
+                      ) : null}
+                    </div>
                   </td>
                 </tr>
               ))
@@ -194,6 +204,16 @@ export function AuctionsPage() {
           </tbody>
         </table>
       </div>
+
+      {selectedAuctionForBids ? (
+        <AuctionBidsModal
+          auction={selectedAuctionForBids}
+          onClose={() => {
+            setSelectedAuctionForBids(null);
+            load();
+          }}
+        />
+      ) : null}
 
       {showCreateModal ? (
         <CreateAuctionModal

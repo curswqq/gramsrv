@@ -830,6 +830,24 @@ type StarGiftAuctionAdminRow struct {
 	WinnersCount  int
 }
 
+type StarGiftAuctionBidRow struct {
+	GiftID            int64  `json:"gift_id,string"`
+	BidderUserID      int64  `json:"bidder_user_id,string"`
+	BidderUsername    string `json:"bidder_username"`
+	BidderFirstName   string `json:"bidder_first_name"`
+	BidderLastName    string `json:"bidder_last_name"`
+	RecipientPeerType string `json:"recipient_peer_type"`
+	RecipientPeerID   int64  `json:"recipient_peer_id,string"`
+	Amount            int64  `json:"amount,string"`
+	BidDate           int    `json:"bid_date"`
+	HideName          bool   `json:"hide_name"`
+	Message           string `json:"message"`
+	Returned          bool   `json:"returned"`
+	AcquiredCount     int    `json:"acquired_count"`
+	Active            bool   `json:"active"`
+	Version           int64  `json:"version,string"`
+}
+
 type StarGiftWithdrawalRequest struct {
 	UserID int64
 	Ref    SavedStarGiftRef

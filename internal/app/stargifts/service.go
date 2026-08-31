@@ -741,11 +741,25 @@ func (s *Service) CancelAuction(ctx context.Context, giftID int64, now int) erro
 	return s.lifecycle.CancelStarGiftAuction(ctx, giftID, now)
 }
 
+func (s *Service) CancelAuctionBid(ctx context.Context, giftID, bidderUserID int64, refundStars bool, now int) error {
+	if s == nil || s.lifecycle == nil {
+		return domain.ErrStarGiftAuctionUnavailable
+	}
+	return s.lifecycle.CancelStarGiftAuctionBid(ctx, giftID, bidderUserID, refundStars, now)
+}
+
 func (s *Service) ListAuctions(ctx context.Context) ([]domain.StarGiftAuctionAdminRow, error) {
 	if s == nil || s.lifecycle == nil {
 		return nil, domain.ErrStarGiftAuctionUnavailable
 	}
 	return s.lifecycle.ListStarGiftAuctions(ctx)
+}
+
+func (s *Service) ListAuctionBids(ctx context.Context, giftID int64) ([]domain.StarGiftAuctionBidRow, error) {
+	if s == nil || s.lifecycle == nil {
+		return nil, domain.ErrStarGiftAuctionUnavailable
+	}
+	return s.lifecycle.ListStarGiftAuctionBids(ctx, giftID)
 }
 
 func (s *Service) PrepaidUpgradeTarget(ctx context.Context, owner domain.Peer, hash string) (domain.SavedStarGift, int64, error) {

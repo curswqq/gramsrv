@@ -544,6 +544,52 @@ ORDER BY a.gift_id DESC`)
 	return out, rows.Err()
 }
 
+type StarGiftAuctionBidRow struct {
+	GiftID            int64  `json:"GiftID,string"`
+	BidderUserID      int64  `json:"BidderUserID,string"`
+	BidderUsername    string `json:"BidderUsername"`
+	BidderFirstName   string `json:"BidderFirstName"`
+	BidderLastName    string `json:"BidderLastName"`
+	RecipientPeerType string `json:"RecipientPeerType"`
+	RecipientPeerID   int64  `json:"RecipientPeerID,string"`
+	Amount            int64  `json:"Amount,string"`
+	BidDate           int    `json:"BidDate"`
+	HideName          bool   `json:"HideName"`
+	Message           string `json:"Message"`
+	Returned          bool   `json:"Returned"`
+	AcquiredCount     int    `json:"AcquiredCount"`
+	Active            bool   `json:"Active"`
+	Version           int64  `json:"Version,string"`
+}
+
+func (s *readStore) ListStarGiftAuctionBids(ctx context.Context, giftID int64) ([]StarGiftAuctionBidRow, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT b.gift_id, b.bidder_user_id, COALESCE(u.username, ''), COALESCE(u.first_name, ''), COALESCE(u.last_name, ''),
+       b.recipient_peer_type, b.recipient_peer_id, b.amount, b.bid_date, b.hide_name, b.message,
+       b.returned, b.acquired_count, b.active, b.version
+FROM star_gift_auction_bids b
+LEFT JOIN users u ON u.id = b.bidder_user_id
+WHERE b.gift_id = $1
+ORDER BY b.amount DESC, b.bid_date ASC, b.bidder_user_id ASC`, giftID)
+	if err != nil {
+		return nil, fmt.Errorf("list star gift auction bids: %w", err)
+	}
+	defer rows.Close()
+	out := make([]StarGiftAuctionBidRow, 0)
+	for rows.Next() {
+		var item StarGiftAuctionBidRow
+		if err := rows.Scan(
+			&item.GiftID, &item.BidderUserID, &item.BidderUsername, &item.BidderFirstName, &item.BidderLastName,
+			&item.RecipientPeerType, &item.RecipientPeerID, &item.Amount, &item.BidDate, &item.HideName, &item.Message,
+			&item.Returned, &item.AcquiredCount, &item.Active, &item.Version,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (s *readStore) SearchAccounts(ctx context.Context, q string) ([]AccountRow, error) {
 	q = strings.TrimSpace(q)
 	if q == "" {

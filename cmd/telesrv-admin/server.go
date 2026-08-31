@@ -159,8 +159,10 @@ func (s *server) routes() http.Handler {
 	mux.Handle("POST /api/actions/set-gift-sort-order", s.requireAuthAPI(http.HandlerFunc(s.handleSetStarGiftSortOrderAPI)))
 	mux.Handle("POST /api/actions/give-gift", s.requireAuthAPI(http.HandlerFunc(s.handleGiveGiftAPI)))
 	mux.Handle("GET /api/star-gift-auctions", s.requireAuthAPI(http.HandlerFunc(s.handleStarGiftAuctionsAPI)))
+	mux.Handle("GET /api/star-gift-auctions/{id}/bids", s.requireAuthAPI(http.HandlerFunc(s.handleStarGiftAuctionBidsAPI)))
 	mux.Handle("POST /api/actions/create-star-gift-auction", s.requireAuthAPI(http.HandlerFunc(s.handleCreateStarGiftAuctionAPI)))
 	mux.Handle("POST /api/actions/cancel-star-gift-auction", s.requireAuthAPI(http.HandlerFunc(s.handleCancelStarGiftAuctionAPI)))
+	mux.Handle("POST /api/actions/cancel-star-gift-auction-bid", s.requireAuthAPI(http.HandlerFunc(s.handleCancelStarGiftAuctionBidAPI)))
 	mux.Handle("POST /api/actions/mint-collectible-username", s.requireAuthAPI(http.HandlerFunc(s.handleMintCollectibleUsernameAPI)))
 	mux.Handle("POST /api/actions/mint-collectible-phone", s.requireAuthAPI(http.HandlerFunc(s.handleMintCollectiblePhoneAPI)))
 	mux.Handle("POST /api/actions/update-collectible-phone-price", s.requireAuthAPI(http.HandlerFunc(s.handleUpdateCollectiblePhonePriceAPI)))
@@ -415,6 +417,24 @@ func (s *server) handleStarGiftAuctionsAPI(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"Auctions": rows})
+}
+
+func (s *server) handleStarGiftAuctionBidsAPI(w http.ResponseWriter, r *http.Request) {
+	if s.read == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "read store is not configured")
+		return
+	}
+	giftID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || giftID <= 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid gift id")
+		return
+	}
+	rows, err := s.read.ListStarGiftAuctionBids(r.Context(), giftID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"Bids": rows})
 }
 
 func (s *server) handleEmojiAPI(w http.ResponseWriter, r *http.Request) {
@@ -2417,6 +2437,30 @@ func (s *server) handleCancelStarGiftAuctionAPI(w http.ResponseWriter, r *http.R
 		GiftID:      body.GiftID,
 	}
 	result, err := s.callAdminAPI(r.Context(), "/v1/gifts/auctions/cancel", req)
+	writeCommandResultAPI(w, result, err)
+}
+
+type cancelStarGiftAuctionBidAPIRequest struct {
+	CommandID    string `json:"command_id"`
+	Reason       string `json:"reason"`
+	Confirm      bool   `json:"confirm"`
+	GiftID       int64  `json:"gift_id,string"`
+	BidderUserID int64  `json:"bidder_user_id,string"`
+	RefundStars  bool   `json:"refund_stars"`
+}
+
+func (s *server) handleCancelStarGiftAuctionBidAPI(w http.ResponseWriter, r *http.Request) {
+	var body cancelStarGiftAuctionBidAPIRequest
+	if !decodeAction(w, r, &body) {
+		return
+	}
+	req := admin.CancelStarGiftAuctionBidRequest{
+		CommandMeta:  s.commandMetaFromAPI(r, body.CommandID, body.Reason, body.Confirm, "cancel-star-gift-auction-bid"),
+		GiftID:       body.GiftID,
+		BidderUserID: body.BidderUserID,
+		RefundStars:  body.RefundStars,
+	}
+	result, err := s.callAdminAPI(r.Context(), "/v1/gifts/auctions/bids/cancel", req)
 	writeCommandResultAPI(w, result, err)
 }
 
