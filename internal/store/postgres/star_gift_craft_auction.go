@@ -1008,7 +1008,10 @@ func (s *StarGiftLifecycleStore) BidStarGiftAuction(ctx context.Context, req dom
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		if oldActive && (!req.UpdateBid || req.BidAmount <= oldAmount) || !oldActive && req.UpdateBid {
+		if oldActive && req.BidAmount <= oldAmount {
+			return domain.ErrStarGiftAuctionUnavailable
+		}
+		if !oldActive && req.BidAmount < minimum {
 			return domain.ErrStarGiftAuctionUnavailable
 		}
 		reserved := int64(0)
@@ -1025,11 +1028,11 @@ func (s *StarGiftLifecycleStore) BidStarGiftAuction(ctx context.Context, req dom
 		if _, err := tx.Exec(ctx, `INSERT INTO star_gift_auction_bids(gift_id,bidder_user_id,recipient_peer_type,recipient_peer_id,
 amount,bid_date,hide_name,message) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
 ON CONFLICT(gift_id,bidder_user_id) DO UPDATE SET
-recipient_peer_type=CASE WHEN star_gift_auction_bids.active THEN star_gift_auction_bids.recipient_peer_type ELSE EXCLUDED.recipient_peer_type END,
-recipient_peer_id=CASE WHEN star_gift_auction_bids.active THEN star_gift_auction_bids.recipient_peer_id ELSE EXCLUDED.recipient_peer_id END,
+recipient_peer_type=EXCLUDED.recipient_peer_type,
+recipient_peer_id=EXCLUDED.recipient_peer_id,
 amount=EXCLUDED.amount,bid_date=EXCLUDED.bid_date,
-hide_name=CASE WHEN star_gift_auction_bids.active THEN star_gift_auction_bids.hide_name ELSE EXCLUDED.hide_name END,
-message=CASE WHEN star_gift_auction_bids.active THEN star_gift_auction_bids.message ELSE EXCLUDED.message END,
+hide_name=EXCLUDED.hide_name,
+message=EXCLUDED.message,
 returned=false,active=true,version=star_gift_auction_bids.version+1`,
 			req.GiftID, req.UserID, string(req.Peer.Type), req.Peer.ID, req.BidAmount, req.Date, req.HideName, req.Message); err != nil {
 			return err

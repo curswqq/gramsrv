@@ -184,9 +184,10 @@ func (r *Router) sendStarGiftAuctionBidForm(ctx context.Context, userID, formID 
 	if text, ok := inv.GetMessage(); ok {
 		message = clampGiftMessage(text.Text)
 	}
+	isUpdate := state.UserState.BidAmount > 0
 	newState, balance, err := r.deps.Gifts.BidAuction(ctx, domain.StarGiftAuctionBidRequest{UserID: userID,
 		GiftID: inv.GiftID, Peer: peer, BidAmount: inv.BidAmount, HideName: inv.HideName, Message: message,
-		UpdateBid: inv.UpdateBid, FormID: formID, Date: int(r.clock.Now().Unix())})
+		UpdateBid: isUpdate, FormID: formID, Date: int(r.clock.Now().Unix())})
 	if err != nil {
 		return nil, starGiftLifecycleErr(err)
 	}
@@ -208,27 +209,13 @@ func (r *Router) starGiftAuctionBidTarget(ctx context.Context, userID int64, inv
 	}
 	oldAmount := state.UserState.BidAmount
 	peer := domain.Peer{Type: domain.PeerTypeUser, ID: userID}
-	if inv.UpdateBid {
-		if oldAmount <= 0 || inv.HideName {
-			return domain.StarGiftAuction{}, domain.Peer{}, 0, starGiftInvalidErr()
+	if inputPeer, ok := inv.GetPeer(); ok {
+		peer, err = r.checkedDomainPeerFromInputPeer(ctx, userID, inputPeer)
+		if err != nil {
+			return domain.StarGiftAuction{}, domain.Peer{}, 0, err
 		}
-		if _, ok := inv.GetPeer(); ok {
-			return domain.StarGiftAuction{}, domain.Peer{}, 0, starGiftInvalidErr()
-		}
-		if _, ok := inv.GetMessage(); ok {
-			return domain.StarGiftAuction{}, domain.Peer{}, 0, starGiftInvalidErr()
-		}
+	} else if oldAmount > 0 && state.UserState.BidPeer.ID > 0 {
 		peer = state.UserState.BidPeer
-	} else {
-		if oldAmount > 0 {
-			return domain.StarGiftAuction{}, domain.Peer{}, 0, starGiftInvalidErr()
-		}
-		if inputPeer, ok := inv.GetPeer(); ok {
-			peer, err = r.checkedDomainPeerFromInputPeer(ctx, userID, inputPeer)
-			if err != nil {
-				return domain.StarGiftAuction{}, domain.Peer{}, 0, err
-			}
-		}
 	}
 	if peer.Type == domain.PeerTypeChannel {
 		if err := r.checkStarGiftOwnerPermission(ctx, userID, peer); err != nil {
@@ -236,13 +223,20 @@ func (r *Router) starGiftAuctionBidTarget(ctx context.Context, userID int64, inv
 		}
 	}
 	minimum := state.MinBidAmount
-	if oldAmount > 0 {
+	if oldAmount > 0 && state.UserState.MinBidAmount > minimum {
 		minimum = state.UserState.MinBidAmount
 	}
-	if inv.BidAmount < minimum || inv.BidAmount <= oldAmount {
+	if inv.BidAmount < minimum {
 		return domain.StarGiftAuction{}, domain.Peer{}, 0, starGiftInvalidErr()
 	}
-	return state, peer, inv.BidAmount - oldAmount, nil
+	delta := inv.BidAmount
+	if oldAmount > 0 {
+		if inv.BidAmount <= oldAmount {
+			return domain.StarGiftAuction{}, domain.Peer{}, 0, starGiftInvalidErr()
+		}
+		delta = inv.BidAmount - oldAmount
+	}
+	return state, peer, delta, nil
 }
 
 func (r *Router) starGiftPrepaidUpgradePaymentForm(ctx context.Context, userID int64, inv *tg.InputInvoiceStarGiftPrepaidUpgrade) (tg.PaymentsPaymentFormClass, error) {
