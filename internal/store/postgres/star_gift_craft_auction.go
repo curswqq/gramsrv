@@ -1229,7 +1229,7 @@ WHERE gift_id=$1`, req.GiftID, supply); err != nil {
 
 		if _, err := tx.Exec(ctx, `
 UPDATE star_gift_catalog_revisions
-SET auction=true, auction_slug=$2, auction_start_date=$3, gifts_per_round=$4, availability_total=$5
+SET auction=true, limited=true, auction_slug=$2, auction_start_date=$3, gifts_per_round=$4, availability_total=$5
 WHERE gift_id=$1 AND id=(SELECT active_revision_id FROM star_gift_catalog WHERE gift_id=$1)`,
 			req.GiftID, req.Slug, req.StartDate, req.GiftsPerRound, supply); err != nil {
 			return fmt.Errorf("update catalog revision auction flags: %w", err)
@@ -1280,7 +1280,7 @@ func (s *StarGiftLifecycleStore) CancelStarGiftAuction(ctx context.Context, gift
 		if _, err := tx.Exec(ctx, `UPDATE star_gift_auctions SET status='cancelled', version=version+1, updated_at=now() WHERE gift_id=$1`, giftID); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE star_gift_catalog_revisions SET auction=false WHERE gift_id=$1 AND id=(SELECT active_revision_id FROM star_gift_catalog WHERE gift_id=$1)`, giftID); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE star_gift_catalog_revisions SET auction=false, auction_slug='', gifts_per_round=0, auction_start_date=0 WHERE gift_id=$1 AND id=(SELECT active_revision_id FROM star_gift_catalog WHERE gift_id=$1)`, giftID); err != nil {
 			return err
 		}
 		return s.refundUnreachableAuctionBids(ctx, tx, giftID, 0, true, now)
