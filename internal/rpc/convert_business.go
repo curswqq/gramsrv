@@ -347,16 +347,35 @@ func businessWorkHoursOpenNow(in *domain.BusinessWorkHours, now time.Time) bool 
 	if in == nil || len(in.WeeklyOpen) == 0 {
 		return false
 	}
-	location, err := time.LoadLocation(in.TimezoneID)
-	if err != nil {
-		return false
+	location := time.UTC
+	if in.TimezoneID != "" {
+		if loc, err := time.LoadLocation(in.TimezoneID); err == nil {
+			location = loc
+		}
 	}
 	local := now.In(location)
 	weekday := (int(local.Weekday()) + 6) % 7 // Telegram weeks start on Monday.
 	minute := weekday*24*60 + local.Hour()*60 + local.Minute()
+	const weekMinutes = 7 * 24 * 60
 	for _, interval := range in.WeeklyOpen {
-		if (minute >= interval.StartMinute && minute < interval.EndMinute) ||
-			(minute+7*24*60 >= interval.StartMinute && minute+7*24*60 < interval.EndMinute) {
+		start := interval.StartMinute
+		end := interval.EndMinute
+		if start < 0 {
+			continue
+		}
+		if end <= start && end >= 0 {
+			end += weekMinutes
+		}
+		if end <= start || end > 8*24*60 {
+			continue
+		}
+		if end <= weekMinutes {
+			if minute >= start && minute < end {
+				return true
+			}
+			continue
+		}
+		if minute >= start || minute+weekMinutes < end {
 			return true
 		}
 	}

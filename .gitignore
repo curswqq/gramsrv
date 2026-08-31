@@ -30,6 +30,3 @@ tmp/
 # IDE
 .idea/
 .vscode/
-.codex-tmp/
-out/
-

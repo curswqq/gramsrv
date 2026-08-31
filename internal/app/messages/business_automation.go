@@ -175,6 +175,9 @@ func (s *Service) businessAwayEligible(ctx context.Context, profile domain.Busin
 	if away.Schedule.Kind == domain.BusinessAwayScheduleCustom && last.SentAt < away.Schedule.StartDate {
 		return true
 	}
+	if away.Schedule.Kind == domain.BusinessAwayScheduleOutsideWorkHours && businessWorkHoursHadOpenInterval(profile.WorkHours, last.SentAt, now) {
+		return true
+	}
 	return now-last.SentAt >= domain.BusinessAwayCooldownSeconds
 }
 
@@ -225,6 +228,7 @@ func (s *Service) deliverConnectedBusinessBotAutomation(ctx context.Context, tri
 			RandomID:               businessAutomationRandomID(domain.BusinessAutomationAI, automation.ownerUserID, automation.customerUserID, trigger.ID, msg.ID, i),
 			Message:                msg.Message,
 			Entities:               append([]domain.MessageEntity(nil), msg.Entities...),
+			Media:                  msg.Media,
 			Date:                   now,
 			ViaBotID:               connected.BotUserID,
 			BusinessAutomationKind: domain.BusinessAutomationAI,
@@ -268,6 +272,7 @@ func (s *Service) deliverBusinessAutomation(ctx context.Context, profile domain.
 			RandomID:               businessAutomationRandomID(kind, profile.UserID, customerUserID, trigger.ID, msg.ID, i),
 			Message:                msg.Message,
 			Entities:               append([]domain.MessageEntity(nil), msg.Entities...),
+			Media:                  msg.Media,
 			Date:                   now,
 			BusinessAutomationKind: kind,
 		})
@@ -306,7 +311,8 @@ func (s *Service) businessAutomationMessages(ctx context.Context, profile domain
 	}
 	out := make([]domain.QuickReplyMessage, 0, len(msgs))
 	for _, msg := range msgs {
-		if msg.Message == "" || utf8.RuneCountInString(msg.Message) > domain.MaxMessageTextLength || len(msg.Entities) > domain.MaxMessageEntityCount {
+		hasMedia := msg.Media != nil && !msg.Media.IsZero()
+		if (msg.Message == "" && !hasMedia) || utf8.RuneCountInString(msg.Message) > domain.MaxMessageTextLength || len(msg.Entities) > domain.MaxMessageEntityCount {
 			continue
 		}
 		out = append(out, msg)
@@ -350,40 +356,87 @@ func businessAwayScheduleActive(hours *domain.BusinessWorkHours, schedule domain
 	case domain.BusinessAwayScheduleCustom:
 		return now >= schedule.StartDate && now < schedule.EndDate
 	case domain.BusinessAwayScheduleOutsideWorkHours:
-		open, ok := businessWorkHoursOpen(hours, now)
-		return ok && !open
+		if hours == nil || len(hours.WeeklyOpen) == 0 {
+			return true
+		}
+		open, _ := businessWorkHoursOpen(hours, now)
+		return !open
 	default:
 		return false
 	}
 }
 
 func businessWorkHoursOpen(hours *domain.BusinessWorkHours, now int) (bool, bool) {
-	if hours == nil || hours.TimezoneID == "" || len(hours.WeeklyOpen) == 0 {
+	if hours == nil || len(hours.WeeklyOpen) == 0 {
 		return false, false
 	}
-	loc, err := time.LoadLocation(hours.TimezoneID)
-	if err != nil {
+	loc := time.UTC
+	if hours.TimezoneID != "" {
+		if l, err := time.LoadLocation(hours.TimezoneID); err == nil {
+			loc = l
+		}
+	}
+	return businessWorkHoursOpenAtLocation(hours, now, loc)
+}
+
+func businessWorkHoursOpenAtLocation(hours *domain.BusinessWorkHours, now int, loc *time.Location) (bool, bool) {
+	if hours == nil || len(hours.WeeklyOpen) == 0 {
 		return false, false
+	}
+	if loc == nil {
+		loc = time.UTC
 	}
 	local := time.Unix(int64(now), 0).In(loc)
 	weekday := (int(local.Weekday()) + 6) % 7
 	minute := weekday*24*60 + local.Hour()*60 + local.Minute()
 	const weekMinutes = 7 * 24 * 60
 	for _, item := range hours.WeeklyOpen {
-		if item.StartMinute < 0 || item.EndMinute <= item.StartMinute || item.EndMinute > 8*24*60 {
+		start := item.StartMinute
+		end := item.EndMinute
+		if start < 0 {
 			continue
 		}
-		if item.EndMinute <= weekMinutes {
-			if minute >= item.StartMinute && minute < item.EndMinute {
+		if end <= start && end >= 0 {
+			end += weekMinutes
+		}
+		if end <= start || end > 8*24*60 {
+			continue
+		}
+		if end <= weekMinutes {
+			if minute >= start && minute < end {
 				return true, true
 			}
 			continue
 		}
-		if minute >= item.StartMinute || minute+weekMinutes < item.EndMinute {
+		if minute >= start || minute+weekMinutes < end {
 			return true, true
 		}
 	}
 	return false, true
+}
+
+func businessWorkHoursHadOpenInterval(hours *domain.BusinessWorkHours, from, to int) bool {
+	if hours == nil || len(hours.WeeklyOpen) == 0 || to <= from {
+		return false
+	}
+	if to-from >= 7*24*60*60 {
+		return true
+	}
+	loc := time.UTC
+	if hours.TimezoneID != "" {
+		if l, err := time.LoadLocation(hours.TimezoneID); err == nil {
+			loc = l
+		}
+	}
+	for t := from; t <= to; t += 30 * 60 {
+		if open, _ := businessWorkHoursOpenAtLocation(hours, t, loc); open {
+			return true
+		}
+	}
+	if open, _ := businessWorkHoursOpenAtLocation(hours, to, loc); open {
+		return true
+	}
+	return false
 }
 
 func businessAutomationRandomID(kind domain.BusinessAutomationKind, ownerUserID, customerUserID int64, triggerMessageID, templateMessageID, index int) int64 {

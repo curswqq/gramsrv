@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"telesrv/internal/app/account"
 	"telesrv/internal/app/readmodel"
@@ -247,6 +248,95 @@ func TestBusinessAutomationAwayHonorsOnlineStateAndCooldown(t *testing.T) {
 	}
 	if got := countBusinessMessagesByBody(t, ctx, messages, customerID, ownerID, "away reply"); got != 1 {
 		t.Fatalf("away reply count = %d, want 1", got)
+	}
+}
+
+func TestBusinessAwayScheduleOutsideWorkHoursAndMedia(t *testing.T) {
+	ctx := context.Background()
+	const ownerID int64 = 2101
+	const customerID int64 = 2102
+
+	dialogs := memory.NewDialogStore()
+	messages := memory.NewMessageStore(dialogs)
+	business := memory.NewPasswordStore()
+	accountSvc := account.NewService(business, account.WithBusinessAutomation(business))
+
+	// Open Monday 09:00 - 18:00 (540 to 1080)
+	if _, err := accountSvc.UpdateBusinessWorkHours(ctx, ownerID, &domain.BusinessWorkHours{
+		TimezoneID: "UTC",
+		WeeklyOpen: []domain.BusinessWeeklyOpen{{StartMinute: 540, EndMinute: 1080}},
+	}); err != nil {
+		t.Fatalf("update work hours: %v", err)
+	}
+
+	mutation, err := accountSvc.SaveQuickReplyText(ctx, ownerID, "away_media", domain.QuickReplyMessage{
+		RandomID: 777,
+		Date:     1_700_000_000,
+		Message:  "closed now",
+		Media: &domain.MessageMedia{
+			Photo: &domain.Photo{ID: 999888},
+		},
+	})
+	if err != nil {
+		t.Fatalf("save quick reply media: %v", err)
+	}
+	shortcutID := mutation.ShortcutID
+
+	if _, err := accountSvc.UpdateBusinessAwayMessage(ctx, ownerID, &domain.BusinessAwayMessage{
+		ShortcutID: shortcutID,
+		Schedule:   domain.BusinessAwaySchedule{Kind: domain.BusinessAwayScheduleOutsideWorkHours},
+		Recipients: businessAutomationAllRecipients(),
+	}); err != nil {
+		t.Fatalf("update away: %v", err)
+	}
+
+	svc := NewService(messages, dialogs, WithBusinessAutomation(business))
+
+	// Monday 12:00 UTC (during work hours = 1700049600): Mon Aug 10 2026 12:00 UTC -> 720 minute
+	// 2026-08-10 12:00:00 UTC = 1786363200
+	monday12pm := int(time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC).Unix())
+	if _, err := svc.SendPrivateText(ctx, customerID, domain.SendPrivateTextRequest{
+		SenderUserID:    customerID,
+		RecipientUserID: ownerID,
+		RandomID:        30001,
+		Message:         "hello during open hours",
+		Date:            monday12pm,
+	}); err != nil {
+		t.Fatalf("send during open hours: %v", err)
+	}
+	if got := countBusinessMessagesByBody(t, ctx, messages, customerID, ownerID, "closed now"); got != 0 {
+		t.Fatalf("away during open hours count = %d, want 0", got)
+	}
+
+	// Monday 20:00 UTC (outside work hours = 1200 minute)
+	monday8pm := int(time.Date(2026, time.August, 10, 20, 0, 0, 0, time.UTC).Unix())
+	if _, err := svc.SendPrivateText(ctx, customerID, domain.SendPrivateTextRequest{
+		SenderUserID:    customerID,
+		RecipientUserID: ownerID,
+		RandomID:        30002,
+		Message:         "hello closed",
+		Date:            monday8pm,
+	}); err != nil {
+		t.Fatalf("send outside work hours: %v", err)
+	}
+	if got := countBusinessMessagesByBody(t, ctx, messages, customerID, ownerID, "closed now"); got != 1 {
+		t.Fatalf("away during off-hours count = %d, want 1", got)
+	}
+
+	// Tuesday 20:00 UTC (store was open in between Tuesday 09:00-18:00!)
+	// Cooldown resets for the new off-hours session!
+	tuesday8pm := int(time.Date(2026, time.August, 11, 20, 0, 0, 0, time.UTC).Unix())
+	if _, err := svc.SendPrivateText(ctx, customerID, domain.SendPrivateTextRequest{
+		SenderUserID:    customerID,
+		RecipientUserID: ownerID,
+		RandomID:        30003,
+		Message:         "hello next night",
+		Date:            tuesday8pm,
+	}); err != nil {
+		t.Fatalf("send next night: %v", err)
+	}
+	if got := countBusinessMessagesByBody(t, ctx, messages, customerID, ownerID, "closed now"); got != 2 {
+		t.Fatalf("away during next night count = %d, want 2", got)
 	}
 }
 
