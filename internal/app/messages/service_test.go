@@ -340,7 +340,7 @@ func TestBusinessAwayScheduleOutsideWorkHoursAndMedia(t *testing.T) {
 	}
 }
 
-func TestBusinessAutomationReplyProviderCanReplaceTemplate(t *testing.T) {
+func TestBusinessAutomationGreetingUsesConfiguredTemplate(t *testing.T) {
 	ctx := context.Background()
 	const ownerID int64 = 2201
 	const customerID int64 = 2202
@@ -358,57 +358,21 @@ func TestBusinessAutomationReplyProviderCanReplaceTemplate(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("update greeting: %v", err)
 	}
-	svc := NewService(messages, dialogs, WithBusinessAutomation(business, WithBusinessAutomationReplyProvider(staticBusinessAutomationProvider{message: "ai reply"})))
-	if _, err := svc.SendPrivateText(ctx, customerID, domain.SendPrivateTextRequest{
-		SenderUserID:    customerID,
-		RecipientUserID: ownerID,
-		RandomID:        30001,
-		Message:         "hi",
-		Date:            1_700_020_000,
-	}); err != nil {
-		t.Fatalf("send first message: %v", err)
-	}
-	if got := countBusinessMessagesByBody(t, ctx, messages, customerID, ownerID, "ai reply"); got != 1 {
-		t.Fatalf("provider reply count = %d, want 1", got)
-	}
-	if got := countBusinessMessagesByBody(t, ctx, messages, customerID, ownerID, "template reply"); got != 0 {
-		t.Fatalf("template reply count = %d, want 0", got)
-	}
-}
-
-func TestBusinessAutomationEchoProviderEchoesTriggerText(t *testing.T) {
-	ctx := context.Background()
-	const ownerID int64 = 2301
-	const customerID int64 = 2302
-
-	dialogs := memory.NewDialogStore()
-	messages := memory.NewMessageStore(dialogs)
-	business := memory.NewPasswordStore()
-	accountSvc := account.NewService(business, account.WithBusinessAutomation(business))
-
-	shortcutID := saveBusinessQuickReply(t, ctx, accountSvc, ownerID, "hello", "template reply", 400)
-	if _, err := accountSvc.UpdateBusinessGreetingMessage(ctx, ownerID, &domain.BusinessGreetingMessage{
-		ShortcutID:     shortcutID,
-		Recipients:     businessAutomationAllRecipients(),
-		NoActivityDays: 7,
-	}); err != nil {
-		t.Fatalf("update greeting: %v", err)
-	}
 	svc := NewService(messages, dialogs, WithBusinessAutomation(business, WithBusinessAutomationReplyProvider(NewEchoBusinessAutomationProvider())))
 	if _, err := svc.SendPrivateText(ctx, customerID, domain.SendPrivateTextRequest{
 		SenderUserID:    customerID,
 		RecipientUserID: ownerID,
-		RandomID:        40001,
-		Message:         "echo this",
-		Date:            1_700_030_000,
+		RandomID:        30001,
+		Message:         "hi customer message",
+		Date:            1_700_020_000,
 	}); err != nil {
 		t.Fatalf("send first message: %v", err)
 	}
-	if got := countBusinessMessagesByBody(t, ctx, messages, customerID, ownerID, "echo this"); got != 2 {
-		t.Fatalf("echo body count in customer history = %d, want 2 (outgoing + echo reply)", got)
+	if got := countBusinessMessagesByBody(t, ctx, messages, customerID, ownerID, "template reply"); got != 1 {
+		t.Fatalf("template reply count = %d, want 1", got)
 	}
-	if got := countBusinessMessagesByBody(t, ctx, messages, customerID, ownerID, "template reply"); got != 0 {
-		t.Fatalf("template reply count = %d, want 0", got)
+	if got := countBusinessMessagesByBody(t, ctx, messages, customerID, ownerID, "hi customer message"); got != 1 {
+		t.Fatalf("customer message count = %d, want 1 (incoming only, no echo)", got)
 	}
 }
 

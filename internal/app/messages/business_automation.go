@@ -285,16 +285,19 @@ func (s *Service) deliverBusinessAutomation(ctx context.Context, profile domain.
 
 func (s *Service) businessAutomationMessages(ctx context.Context, profile domain.BusinessProfile, trigger domain.Message, customerUserID int64, kind domain.BusinessAutomationKind, shortcutID int, now int) ([]domain.QuickReplyMessage, error) {
 	var templateMessages []domain.QuickReplyMessage
-	templates, err := s.business.store.GetQuickReplyMessages(ctx, profile.UserID, shortcutID, nil)
-	if err != nil {
-		if s.business.replyProvider == nil || !errors.Is(err, domain.ErrShortcutInvalid) {
-			return nil, err
+	if shortcutID > 0 {
+		templates, err := s.business.store.GetQuickReplyMessages(ctx, profile.UserID, shortcutID, nil)
+		if err != nil {
+			if s.business.replyProvider == nil || !errors.Is(err, domain.ErrShortcutInvalid) {
+				return nil, err
+			}
+		} else {
+			templateMessages = templates.Messages
 		}
-	} else {
-		templateMessages = templates.Messages
 	}
 	msgs := cloneBusinessAutomationMessages(templateMessages)
-	if s.business.replyProvider != nil {
+	if kind == domain.BusinessAutomationAI && s.business.replyProvider != nil {
+		var err error
 		msgs, err = s.business.replyProvider.BusinessAutomationReplies(ctx, BusinessAutomationReplyInput{
 			Kind:           kind,
 			OwnerUserID:    profile.UserID,
