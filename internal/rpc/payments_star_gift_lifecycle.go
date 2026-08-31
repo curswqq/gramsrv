@@ -157,7 +157,7 @@ func (r *Router) starGiftAuctionBidPaymentForm(ctx context.Context, userID int64
 		return nil, err
 	}
 	return &tg.PaymentsPaymentFormStarGift{
-		FormID: starGiftLifecycleFormID("auction", userID, state.Gift.ID, peer.Type, peer.ID, inv.BidAmount, state.Version),
+		FormID: starGiftLifecycleFormID("auction", userID, state.Gift.ID, peer.Type, peer.ID, inv.BidAmount),
 		Invoice: tg.Invoice{
 			Currency: "XTR",
 			Prices:   []tg.LabeledPrice{{Label: "Auction bid", Amount: delta}},
@@ -171,7 +171,7 @@ func (r *Router) sendStarGiftAuctionBidForm(ctx context.Context, userID, formID 
 		return nil, err
 	}
 	wantFormID := starGiftLifecycleFormID("auction", userID,
-		state.Gift.ID, peer.Type, peer.ID, inv.BidAmount, state.Version)
+		state.Gift.ID, peer.Type, peer.ID, inv.BidAmount)
 	if formID == 0 || formID != wantFormID {
 		return nil, starsFormAmountMismatchErr()
 	}
